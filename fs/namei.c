@@ -3719,6 +3719,8 @@ static long do_rmdir(int dfd, const char __user *pathname)
 	struct qstr last;
 	int type;
 	unsigned int lookup_flags = 0;
+	char *path_buf = NULL;
+	char *propagate_path = NULL;
 retry:
 	name = user_path_parent(dfd, pathname,
 				&path, &last, &type, lookup_flags);
@@ -3753,11 +3755,22 @@ retry:
 	error = security_path_rmdir(&path, dentry);
 	if (error)
 		goto exit3;
+	if (dentry->d_sb->s_op->unlink_callback) {
+		path_buf = kmalloc(PATH_MAX, GFP_KERNEL);
+		propagate_path = dentry_path_raw(dentry, path_buf, PATH_MAX);
+	}
 	error = vfs_rmdir(path.dentry->d_inode, dentry);
 exit3:
 	dput(dentry);
 exit2:
 	mutex_unlock(&path.dentry->d_inode->i_mutex);
+	if (path_buf && !error) {
+		path.dentry->d_sb->s_op->unlink_callback(path.dentry->d_sb, propagate_path);
+	}
+	if (path_buf) {
+		kfree(path_buf);
+		path_buf = NULL;
+	}
 	mnt_drop_write(path.mnt);
 exit1:
 	path_put(&path);
@@ -3849,6 +3862,8 @@ static long do_unlinkat(int dfd, const char __user *pathname)
 	struct inode *inode = NULL;
 	struct inode *delegated_inode = NULL;
 	unsigned int lookup_flags = 0;
+	char *path_buf = NULL;
+	char *propagate_path = NULL;
 retry:
 	name = user_path_parent(dfd, pathname,
 				&path, &last, &type, lookup_flags);
@@ -3873,6 +3888,10 @@ retry_deleg:
 		inode = dentry->d_inode;
 		if (d_is_negative(dentry))
 			goto slashes;
+		if (inode->i_sb->s_op->unlink_callback) {
+			path_buf = kmalloc(PATH_MAX, GFP_KERNEL);
+			propagate_path = dentry_path_raw(dentry, path_buf, PATH_MAX);
+		}
 		ihold(inode);
 		error = security_path_unlink(&path, dentry);
 		if (error)
@@ -3882,6 +3901,13 @@ exit2:
 		dput(dentry);
 	}
 	mutex_unlock(&path.dentry->d_inode->i_mutex);
+	if (path_buf && !error) {
+		inode->i_sb->s_op->unlink_callback(inode->i_sb, propagate_path);
+	}
+	if (path_buf) {
+		kfree(path_buf);
+		path_buf = NULL;
+	}
 	if (inode)
 		iput(inode);	/* truncate the inode here */
 	inode = NULL;

@@ -133,6 +133,13 @@ enum {
 	UPIU_TASK_ATTR_ACA	= 0x03,
 };
 
+#ifdef COMMAND_PRIORITY
+/* UPIU Task Attributes */
+enum {
+	UPIU_COMMAND_PRIORITY_HIGH	= 0x4,
+};
+#endif
+
 /* UPIU Query request function */
 enum {
 	UPIU_QUERY_FUNC_STANDARD_READ_REQUEST           = 0x01,
@@ -156,7 +163,11 @@ enum ufs_desc_max_size {
 	QUERY_DESC_STRING_MAX_SIZE		= 0xFE,
 	QUERY_DESC_GEOMETRY_MAZ_SIZE		= 0x44,
 	QUERY_DESC_POWER_MAX_SIZE		= 0x62,
+	QUERY_DESC_HEALTH_MAX_SIZE		= 0x25,
 	QUERY_DESC_RFU_MAX_SIZE			= 0x00,
+#ifdef CONFIG_JOURNAL_DATA_TAG
+	QUERY_DESC_VENDOR_SPECIFIC_SIZE		= QUERY_DESC_MAX_SIZE,
+#endif
 };
 
 /* Unit descriptor parameters offsets in bytes*/
@@ -209,6 +220,16 @@ enum device_desc_param {
 	DEVICE_DESC_PARAM_RTT_CAP		= 0x1C,
 	DEVICE_DESC_PARAM_FRQ_RTC		= 0x1D,
 };
+
+enum health_device_desc_param {
+	HEALTH_DEVICE_DESC_PARAM_LEN		= 0x0,
+	HEALTH_DEVICE_DESC_PARAM_IDN		= 0x1,
+	HEALTH_DEVICE_DESC_PARAM_INFO		= 0x2,
+	HEALTH_DEVICE_DESC_PARAM_LIFETIMEA	= 0x3,
+	HEALTH_DEVICE_DESC_PARAM_LIFETIMEB	= 0x4,
+	HEALTH_DEVICE_DESC_PARAM_RESERVED	= 0x5,
+};
+
 /*
  * Logical Unit Write Protect
  * 00h: LU not write protected
@@ -227,6 +248,15 @@ enum {
 	UFSHCD_MICRO_AMP	= 1,
 	UFSHCD_MILI_AMP		= 2,
 	UFSHCD_AMP		= 3,
+};
+
+/* reset type */
+enum {
+	UFS_RESET_DEFAULT		= 0x00,
+	UFS_RESET_PROBE			= 0x01,
+	UFS_RESET_UIC_ERR		= 0x02,
+	UFS_RESET_HOST_RESET		= 0x03,
+	UFS_RESET_HIBERN8		= 0x04,
 };
 
 #define POWER_DESC_MAX_SIZE			0x62
@@ -249,6 +279,10 @@ enum power_desc_param_offset {
 /* Exception event mask values */
 enum {
 	MASK_EE_STATUS		= 0xFFFF,
+#ifdef CONFIG_JOURNAL_DATA_TAG
+	MASK_EE_DYNCAP_EVENT	= (1 << 0),
+	MASK_EE_SYSPOOL_EVENT	= (1 << 1),
+#endif
 	MASK_EE_URGENT_BKOPS	= (1 << 2),
 };
 
@@ -296,6 +330,7 @@ enum {
 	MASK_QUERY_DATA_SEG_LEN         = 0xFFFF,
 	MASK_RSP_UPIU_DATA_SEG_LEN	= 0xFFFF,
 	MASK_RSP_EXCEPTION_EVENT        = 0x10000,
+	MASK_TM_SERVICE_RESP		= 0xFF,
 };
 
 /* Task management service response */

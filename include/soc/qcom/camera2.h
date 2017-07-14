@@ -106,6 +106,9 @@ struct msm_camera_power_ctrl_t {
 	struct msm_camera_i2c_conf *i2c_conf;
 	struct clk **clk_ptr;
 	struct msm_cam_clk_info *clk_info;
+	unsigned int num_shared_gpios;
+	unsigned int shared_gpios[5];
+	char *sensor_name;
 	struct msm_pinctrl_info pinctrl_info;
 	uint8_t cam_pinctrl_status;
 	size_t clk_info_size;

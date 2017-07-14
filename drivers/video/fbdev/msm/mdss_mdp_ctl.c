@@ -1,4 +1,4 @@
-/* Copyright (c) 2012-2016, The Linux Foundation. All rights reserved.
+/* Copyright (c) 2012-2017, The Linux Foundation. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -27,6 +27,9 @@
 #include "mdss_mdp.h"
 #include "mdss_mdp_trace.h"
 #include "mdss_debug.h"
+#if defined(CONFIG_FB_MSM_MDSS_SAMSUNG)
+#include "samsung/ss_dsi_panel_common.h"
+#endif
 
 #define MDSS_MDP_QSEED3_VER_DOWNSCALE_LIM 2
 #define NUM_MIXERCFG_REGS 3
@@ -2375,7 +2378,7 @@ static void mdss_mdp_ctl_perf_update(struct mdss_mdp_ctl *ctl,
 	 */
 	if (update_clk) {
 		ATRACE_INT("mdp_clk", clk_rate);
-		mdss_mdp_set_clk_rate(clk_rate);
+		mdss_mdp_set_clk_rate(clk_rate, false);
 		pr_debug("update clk rate = %d HZ\n", clk_rate);
 	}
 
@@ -2474,6 +2477,7 @@ struct mdss_mdp_mixer *mdss_mdp_mixer_alloc(
 	u32 nmixers_wb;
 	u32 i;
 	u32 nmixers;
+	u32 nmixers_active;
 	struct mdss_mdp_mixer *mixer_pool = NULL;
 
 	if (!ctl || !ctl->mdata)
@@ -2487,10 +2491,21 @@ struct mdss_mdp_mixer *mdss_mdp_mixer_alloc(
 	case MDSS_MDP_MIXER_TYPE_INTF:
 		mixer_pool = ctl->mdata->mixer_intf;
 		nmixers = nmixers_intf;
+		nmixers_active = nmixers;
+
+		for (i = 0; i < nmixers; i++) {
+			mixer = mixer_pool + i;
+			if (mixer->ref_cnt)
+				nmixers_active--;
+		}
+		mixer = NULL;
 
 		/*
 		 * try to reserve first layer mixer for write back if
-		 * assertive display needs to be supported through wfd
+		 * assertive display needs to be supported through wfd.
+		 * For external displays(pluggable) and writeback avoid
+		 * allocating mixers LM0 and LM1 which are allocated
+		 * to primary display first.
 		 */
 		if (ctl->mdata->has_wb_ad && ctl->intf_num &&
 			((ctl->panel_data->panel_info.type != MIPI_CMD_PANEL) ||
@@ -2500,6 +2515,10 @@ struct mdss_mdp_mixer *mdss_mdp_mixer_alloc(
 			nmixers--;
 		} else if ((ctl->panel_data->panel_info.type == WRITEBACK_PANEL)
 			&& (ctl->mdata->ndspp < nmixers)) {
+			mixer_pool += ctl->mdata->ndspp;
+			nmixers -= ctl->mdata->ndspp;
+		} else if ((ctl->panel_data->panel_info.is_pluggable) &&
+				nmixers_active) {
 			mixer_pool += ctl->mdata->ndspp;
 			nmixers -= ctl->mdata->ndspp;
 		}
@@ -3207,6 +3226,7 @@ static void __dsc_setup_dual_lm_single_display(struct mdss_mdp_ctl *ctl,
 	}
 
 	mdss_panel_dsc_update_pic_dim(dsc, pic_width, pic_height);
+	MDSS_XLOG(dsc->pic_height, dsc->pic_width);
 
 	intf_ip_w = this_frame_slices * dsc->slice_width;
 	mdss_panel_dsc_pclk_param_calc(dsc, intf_ip_w);
@@ -4188,13 +4208,26 @@ static void mdss_mdp_ctl_restore_sub(struct mdss_mdp_ctl *ctl)
 {
 	u32 temp;
 	int ret = 0;
-
+#if defined(CONFIG_FB_MSM_MDSS_SAMSUNG)
+	struct mdss_dsi_ctrl_pdata *ctrl_pdata;
+#endif
 	temp = readl_relaxed(ctl->mdata->mdp_base +
 			MDSS_MDP_REG_DISP_INTF_SEL);
 	temp |= (ctl->intf_type << ((ctl->intf_num - MDSS_MDP_INTF0) * 8));
 	writel_relaxed(temp, ctl->mdata->mdp_base +
 			MDSS_MDP_REG_DISP_INTF_SEL);
 
+#if defined(CONFIG_FB_MSM_MDSS_SAMSUNG)
+	// Select primary vsync gpio
+	// 0x : Vsync primary(GPIO_10)
+	// 0x2200 : Vsync external(GPIO_12)
+
+	ctrl_pdata = container_of(ctl->panel_data, struct mdss_dsi_ctrl_pdata, panel_data);
+	if (ctrl_pdata->disp_te_gpio == 12) {
+		// ex) Dream project used primary vsync gpio as a GPIO_12.
+		writel_relaxed(0x02200, ctl->mdata->mdp_base +	MDSS_MDP_REG_VSYNC_SEL);
+	}
+#endif
 	if (ctl->mfd && ctl->panel_data) {
 		ctl->mfd->ipc_resume = true;
 		mdss_mdp_pp_resume(ctl->mfd);
@@ -4268,6 +4301,9 @@ static int mdss_mdp_ctl_start_sub(struct mdss_mdp_ctl *ctl, bool handoff)
 	u32 outsize, temp;
 	int ret = 0;
 	int i, nmixers;
+#if defined(CONFIG_FB_MSM_MDSS_SAMSUNG)
+	struct mdss_dsi_ctrl_pdata *ctrl_pdata;
+#endif
 
 	pr_debug("ctl_num=%d\n", ctl->num);
 
@@ -4306,6 +4342,17 @@ static int mdss_mdp_ctl_start_sub(struct mdss_mdp_ctl *ctl, bool handoff)
 	writel_relaxed(temp, ctl->mdata->mdp_base +
 		MDSS_MDP_REG_DISP_INTF_SEL);
 
+#if defined(CONFIG_FB_MSM_MDSS_SAMSUNG)
+	// Select primary vsync gpio
+	// 0x : Vsync primary(GPIO_10)
+	// 0x2200 : Vsync external(GPIO_12)
+
+	ctrl_pdata = container_of(ctl->panel_data, struct mdss_dsi_ctrl_pdata, panel_data);
+	if (ctrl_pdata->disp_te_gpio == 12) {
+		// ex) Dream project used primary vsync gpio as a GPIO_12.
+		writel_relaxed(0x02200, ctl->mdata->mdp_base +	MDSS_MDP_REG_VSYNC_SEL);
+	}
+#endif
 	mixer = ctl->mixer_left;
 	if (mixer) {
 		struct mdss_panel_info *pinfo = &ctl->panel_data->panel_info;
@@ -4436,6 +4483,13 @@ int mdss_mdp_ctl_stop(struct mdss_mdp_ctl *ctl, int power_state)
 		goto end;
 	}
 
+	/*
+	 * reset the play_cnt, after the cmd_stop
+	 * this will ensure pipes are reconfigured
+	 * after every panel power state change
+	 */
+	ctl->play_cnt = 0;
+
 	if (mdss_panel_is_power_on(power_state)) {
 		pr_debug("panel is not off, leaving ctl power on\n");
 		goto end;
@@ -4451,8 +4505,6 @@ int mdss_mdp_ctl_stop(struct mdss_mdp_ctl *ctl, int power_state)
 	}
 
 	mdss_mdp_reset_mixercfg(ctl);
-
-	ctl->play_cnt = 0;
 
 end:
 	if (!ret) {
@@ -5495,8 +5547,13 @@ int mdss_mdp_ctl_update_fps(struct mdss_mdp_ctl *ctl)
 		(pinfo->dfps_update == DFPS_IMMEDIATE_PORCH_UPDATE_MODE_HFP) ||
 		(pinfo->dfps_update ==
 			DFPS_IMMEDIATE_MULTI_UPDATE_MODE_CLK_HFP) ||
+		(pinfo->dfps_update ==
+			DFPS_IMMEDIATE_MULTI_MODE_HFP_CALC_CLK) ||
 		pinfo->dfps_update == DFPS_IMMEDIATE_CLK_UPDATE_MODE) {
-		new_fps = mdss_panel_get_framerate(pinfo);
+		if (pinfo->type == DTV_PANEL)
+			new_fps = pinfo->lcdc.frame_rate;
+		else
+			new_fps = mdss_panel_get_framerate(pinfo);
 	} else {
 		new_fps = pinfo->new_fps;
 	}
@@ -5771,7 +5828,7 @@ int mdss_mdp_display_commit(struct mdss_mdp_ctl *ctl, void *arg,
 		mdss_mdp_ctl_split_display_enable(split_lm_valid, ctl, sctl);
 
 	ATRACE_BEGIN("postproc_programming");
-	if (ctl->mfd && ctl->mfd->dcm_state != DTM_ENTER)
+	if (ctl->is_video_mode && ctl->mfd && ctl->mfd->dcm_state != DTM_ENTER)
 		/* postprocessing setup, including dspp */
 		mdss_mdp_pp_setup_locked(ctl);
 
@@ -5783,7 +5840,9 @@ int mdss_mdp_display_commit(struct mdss_mdp_ctl *ctl, void *arg,
 		} else {
 			sctl_flush_bits = sctl->flush_bits;
 		}
+		sctl->commit_in_progress = true;
 	}
+	ctl->commit_in_progress = true;
 	ctl_flush_bits = ctl->flush_bits;
 
 	ATRACE_END("postproc_programming");
@@ -5816,6 +5875,25 @@ int mdss_mdp_display_commit(struct mdss_mdp_ctl *ctl, void *arg,
 
 	if (ctl->ops.wait_pingpong && !mdata->serialize_wait4pp)
 		mdss_mdp_display_wait4pingpong(ctl, false);
+
+	/* Moved pp programming to post ping pong */
+	if (!ctl->is_video_mode && ctl->mfd &&
+			ctl->mfd->dcm_state != DTM_ENTER) {
+		/* postprocessing setup, including dspp */
+		mutex_lock(&ctl->flush_lock);
+		mdss_mdp_pp_setup_locked(ctl);
+		if (sctl) {
+			if (ctl->split_flush_en) {
+				ctl->flush_bits |= sctl->flush_bits;
+				sctl->flush_bits = 0;
+				sctl_flush_bits = 0;
+			} else {
+				sctl_flush_bits |= sctl->flush_bits;
+			}
+		}
+		ctl_flush_bits |= ctl->flush_bits;
+		mutex_unlock(&ctl->flush_lock);
+	}
 
 	/*
 	 * if serialize_wait4pp is false then roi_bkup used in wait4pingpong
@@ -5911,11 +5989,16 @@ int mdss_mdp_display_commit(struct mdss_mdp_ctl *ctl, void *arg,
 
 	ATRACE_BEGIN("flush_kickoff");
 	mdss_mdp_ctl_write(ctl, MDSS_MDP_REG_CTL_FLUSH, ctl_flush_bits);
-	if (sctl && sctl_flush_bits) {
-		mdss_mdp_ctl_write(sctl, MDSS_MDP_REG_CTL_FLUSH,
-			sctl_flush_bits);
-		sctl->flush_bits = 0;
+	if (sctl) {
+		if (sctl_flush_bits) {
+			mdss_mdp_ctl_write(sctl, MDSS_MDP_REG_CTL_FLUSH,
+				sctl_flush_bits);
+			sctl->flush_bits = 0;
+		}
+		sctl->commit_in_progress = false;
 	}
+	ctl->commit_in_progress = false;
+
 	MDSS_XLOG(ctl->intf_num, ctl_flush_bits, sctl_flush_bits,
 		split_lm_valid);
 	wmb();

@@ -1,4 +1,4 @@
-/* Copyright (c) 2015-2016, The Linux Foundation. All rights reserved.
+/* Copyright (c) 2015-2017, The Linux Foundation. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -39,6 +39,8 @@ struct sde_mdp_set_ot_params {
 	u32 reg_off_vbif_lim_conf;
 	u32 reg_off_mdp_clk_ctrl;
 	u32 bit_off_mdp_clk_ctrl;
+	char __iomem *rotsts_base;
+	u32 rotsts_busy_mask;
 };
 
 enum sde_bus_vote_type {
@@ -83,6 +85,7 @@ enum sde_caps_settings {
 	SDE_CAPS_R1_WB,
 	SDE_CAPS_R3_WB,
 	SDE_CAPS_R3_1P5_DOWNSCALE,
+	SDE_CAPS_SEC_ATTACH_DETACH_SMMU,
 	SDE_CAPS_MAX,
 };
 
@@ -95,6 +98,7 @@ enum sde_bus_clients {
 enum sde_rot_regdump_access {
 	SDE_ROT_REGDUMP_READ,
 	SDE_ROT_REGDUMP_WRITE,
+	SDE_ROT_REGDUMP_VBIF,
 	SDE_ROT_REGDUMP_MAX
 };
 
@@ -111,6 +115,8 @@ struct sde_smmu_client {
 	struct sde_module_power mp;
 	struct reg_bus_client *reg_bus_clt;
 	bool domain_attached;
+	bool domain_reattach;
+	int domain;
 };
 
 struct sde_rot_vbif_debug_bus {
@@ -169,6 +175,9 @@ struct sde_rot_data_type {
 	u32 regdump_size;
 
 	void *sde_rot_hw;
+	int sec_cam_en;
+
+	struct ion_client *iclient;
 };
 
 int sde_rotator_base_init(struct sde_rot_data_type **pmdata,

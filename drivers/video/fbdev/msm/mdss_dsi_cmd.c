@@ -777,6 +777,13 @@ int mdss_dsi_cmdlist_put(struct mdss_dsi_ctrl_pdata *ctrl,
 	pr_debug("%s: tot=%d put=%d get=%d\n", __func__,
 		clist->tot, clist->put, clist->get);
 
+#if defined(CONFIG_FB_MSM_MDSS_SAMSUNG)
+	if (req->flags & CMD_REQ_BROADCAST) {
+	   ctrl->cmd_sync_wait_broadcast = true;
+	   ctrl->cmd_sync_wait_trigger = true;
+	}
+#endif
+
 	mutex_unlock(&ctrl->cmdlist_mutex);
 
 	if (req->flags & CMD_REQ_COMMIT) {
@@ -785,6 +792,14 @@ int mdss_dsi_cmdlist_put(struct mdss_dsi_ctrl_pdata *ctrl,
 		else
 			ret = ctrl->cmdlist_commit(ctrl, 0);
 	}
+
+#if defined(CONFIG_FB_MSM_MDSS_SAMSUNG)
+	if (req->flags & CMD_REQ_BROADCAST) {
+		ctrl->cmd_sync_wait_broadcast = false;
+		ctrl->cmd_sync_wait_trigger = false;
+	}
+#endif
+
 	mutex_unlock(&ctrl->cmd_mutex);
 
 	return ret;

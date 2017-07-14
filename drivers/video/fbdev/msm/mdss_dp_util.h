@@ -1,4 +1,4 @@
-/* Copyright (c) 2016, The Linux Foundation. All rights reserved.
+/* Copyright (c) 2016-2017, The Linux Foundation. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -14,6 +14,13 @@
 #define __DP_UTIL_H__
 
 #include "mdss_dp.h"
+
+#ifdef CONFIG_SEC_DISPLAYPORT
+#ifdef pr_debug
+#undef pr_debug
+#define pr_debug	pr_info
+#endif
+#endif
 
 /* DP_TX Registers */
 #define	DP_HW_VERSION				(0x00000000)
@@ -35,6 +42,8 @@
 #define	DP_AUX_CTRL				(0x00000230)
 #define	DP_AUX_DATA				(0x00000234)
 #define	DP_AUX_TRANS_CTRL			(0x00000238)
+#define	DP_AUX_TIMEOUT_COUNT			(0x0000023C)
+#define	DP_AUX_LIMITS				(0x00000240)
 #define	DP_AUX_STATUS				(0x00000244)
 
 #define DP_DPCD_CP_IRQ				(0x201)
@@ -60,6 +69,12 @@
 #define DP_MAINLINK_LEVELS			(0x00000444)
 #define	DP_TU					(0x0000044C)
 
+#define DP_HBR2_COMPLIANCE_SCRAMBLER_RESET	(0x00000454)
+#define DP_TEST_80BIT_CUSTOM_PATTERN_REG0	(0x000004C0)
+#define DP_TEST_80BIT_CUSTOM_PATTERN_REG1	(0x000004C4)
+#define DP_TEST_80BIT_CUSTOM_PATTERN_REG2	(0x000004C8)
+
+#define MMSS_DP_MISC1_MISC0			(0x0000042C)
 #define	MMSS_DP_AUDIO_TIMING_GEN		(0x00000480)
 #define	MMSS_DP_AUDIO_TIMING_RBR_32		(0x00000484)
 #define	MMSS_DP_AUDIO_TIMING_HBR_32		(0x00000488)
@@ -67,6 +82,9 @@
 #define	MMSS_DP_AUDIO_TIMING_HBR_44		(0x00000490)
 #define	MMSS_DP_AUDIO_TIMING_RBR_48		(0x00000494)
 #define	MMSS_DP_AUDIO_TIMING_HBR_48		(0x00000498)
+
+#define MMSS_DP_PSR_CRC_RG			(0x00000554)
+#define MMSS_DP_PSR_CRC_B			(0x00000558)
 
 #define	MMSS_DP_AUDIO_CFG			(0x00000600)
 #define	MMSS_DP_AUDIO_STATUS			(0x00000604)
@@ -130,6 +148,8 @@
 #define	MMSS_DP_GENERIC1_8			(0x00000748)
 #define	MMSS_DP_GENERIC1_9			(0x0000074C)
 
+#define MMSS_DP_TIMING_ENGINE_EN		(0x00000A10)
+
 /*DP PHY Register offsets */
 #define DP_PHY_REVISION_ID0                     (0x00000000)
 #define DP_PHY_REVISION_ID1                     (0x00000004)
@@ -152,6 +172,7 @@
 #define DP_PHY_AUX_CFG9                         (0x00000040)
 #define DP_PHY_AUX_INTERRUPT_MASK               (0x00000044)
 #define DP_PHY_AUX_INTERRUPT_CLEAR              (0x00000048)
+#define DP_PHY_AUX_INTERRUPT_STATUS             (0x000000B8)
 
 #define DP_PHY_SPARE0				0x00A8
 
@@ -245,6 +266,8 @@ static const struct dp_vc_tu_mapping_table tu_table[] = {
 			0x21, 0x001a, false, 0x00, 0x00, 0x00, 0x27},
 	{HDMI_VFRMT_1920x1080p60_16_9, 4, 06, 24,
 			0x16, 0x000f, false, 0x00, 0x00, 0x00, 0x1f},
+	{HDMI_VFRMT_1920x1080p60_16_9, 4, 10, 24,
+			0x21, 0x0013, false, 0x21, 0x8, 0x1, 0x26},
 	{HDMI_VFRMT_1920x1080p60_16_9, 2, 10, 24,
 			0x21, 0x0011, false, 0x00, 0x00, 0x00, 0x27},
 	{HDMI_VFRMT_1920x1080p60_16_9, 1, 20, 24,
@@ -277,9 +300,8 @@ void mdss_dp_phy_reset(struct dss_io_data *ctrl_io);
 void mdss_dp_switch_usb3_phy_to_dp_mode(struct dss_io_data *tcsr_reg_io);
 void mdss_dp_assert_phy_reset(struct dss_io_data *ctrl_io, bool assert);
 void mdss_dp_setup_tr_unit(struct dss_io_data *ctrl_io, u8 link_rate,
-				u8 ln_cnt, u32 res);
-void mdss_dp_config_misc_settings(struct dss_io_data *ctrl_io,
-					struct mdss_panel_info *pinfo);
+			u8 ln_cnt, u32 res, struct mdss_panel_info *pinfo);
+void mdss_dp_config_misc(struct mdss_dp_drv_pdata *dp, u32 bd, u32 cc);
 void mdss_dp_phy_aux_setup(struct dss_io_data *phy_io);
 void mdss_dp_hpd_configure(struct dss_io_data *ctrl_io, bool enable);
 void mdss_dp_aux_ctrl(struct dss_io_data *ctrl_io, bool enable);
@@ -296,16 +318,18 @@ void mdss_dp_irq_enable(struct mdss_dp_drv_pdata *dp_drv);
 void mdss_dp_irq_disable(struct mdss_dp_drv_pdata *dp_drv);
 void mdss_dp_sw_config_msa(struct dss_io_data *ctrl_io,
 				char lrate, struct dss_io_data *dp_cc_io);
+#ifndef CONFIG_SEC_DISPLAYPORT
 void mdss_dp_usbpd_ext_capabilities(struct usbpd_dp_capabilities *dp_cap);
 void mdss_dp_usbpd_ext_dp_status(struct usbpd_dp_status *dp_status);
 u32 mdss_dp_usbpd_gen_config_pkt(struct mdss_dp_drv_pdata *dp);
+#endif
 void mdss_dp_ctrl_lane_mapping(struct dss_io_data *ctrl_io,
 					struct lane_mapping l_map);
 void mdss_dp_phy_share_lane_config(struct dss_io_data *phy_io,
 					u8 orientation, u8 ln_cnt);
 void mdss_dp_config_audio_acr_ctrl(struct dss_io_data *ctrl_io,
 						char link_rate);
-void mdss_dp_audio_setup_sdps(struct dss_io_data *ctrl_io);
+void mdss_dp_audio_setup_sdps(struct dss_io_data *ctrl_io, u32 num_of_channels);
 void mdss_dp_audio_enable(struct dss_io_data *ctrl_io, bool enable);
 void mdss_dp_audio_select_core(struct dss_io_data *ctrl_io);
 void mdss_dp_audio_set_sample_rate(struct dss_io_data *ctrl_io,
@@ -313,5 +337,10 @@ void mdss_dp_audio_set_sample_rate(struct dss_io_data *ctrl_io,
 void mdss_dp_set_safe_to_exit_level(struct dss_io_data *ctrl_io,
 		uint32_t lane_cnt);
 int mdss_dp_aux_read_rx_status(struct mdss_dp_drv_pdata *dp, u8 *rx_status);
+void mdss_dp_phy_send_test_pattern(struct mdss_dp_drv_pdata *dp);
+void mdss_dp_config_ctl_frame_crc(struct mdss_dp_drv_pdata *dp, bool enable);
+int mdss_dp_read_ctl_frame_crc(struct mdss_dp_drv_pdata *dp);
+void mdss_dp_setup_test_80bit_custom_pattern(struct dss_io_data *ctrl_io);
+void mdss_dp_setup_hbr2_compliance_scramber(struct dss_io_data *ctrl_io, u32 enable);
 
 #endif /* __DP_UTIL_H__ */

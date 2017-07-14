@@ -503,6 +503,7 @@ static int wcd9xxx_device_init(struct wcd9xxx *wcd9xxx)
 	struct wcd9xxx_core_resource *core_res = &wcd9xxx->core_res;
 	regmap_patch_fptr regmap_apply_patch = NULL;
 
+	dev_info(wcd9xxx->dev, "%s()\n", __func__);
 	mutex_init(&wcd9xxx->io_lock);
 	mutex_init(&wcd9xxx->xfer_lock);
 
@@ -570,7 +571,7 @@ static int wcd9xxx_device_init(struct wcd9xxx *wcd9xxx)
 		dev_err(wcd9xxx->dev, "Device wakeup init failed: %d\n", ret);
 		goto err_irq;
 	}
-
+	dev_info(wcd9xxx->dev, "%s() leave\n", __func__);
 	return ret;
 err_irq:
 	wcd9xxx_irq_exit(&wcd9xxx->core_res);
@@ -1217,6 +1218,7 @@ static int wcd9xxx_slim_probe(struct slim_device *slim)
 	int ret = 0;
 	int intf_type;
 
+	dev_info(&slim->dev, "%s()\n", __func__);
 	intf_type = wcd9xxx_get_intf_type();
 
 	if (!slim) {
@@ -1344,6 +1346,7 @@ static int wcd9xxx_slim_probe(struct slim_device *slim)
 	if (ret) {
 		dev_err(&slim->dev, "%s: failed to get slimbus %s logical address: %d\n",
 		       __func__, wcd9xxx->slim->name, ret);
+		ret = -EPROBE_DEFER;
 		goto err_reset;
 	}
 	wcd9xxx->read_dev = wcd9xxx_slim_read_device;
@@ -1368,6 +1371,7 @@ static int wcd9xxx_slim_probe(struct slim_device *slim)
 	if (ret) {
 		dev_err(&slim->dev, "%s: failed to get slimbus %s logical address: %d\n",
 		       __func__, wcd9xxx->slim->name, ret);
+		ret = -EPROBE_DEFER;
 		goto err_slim_add;
 	}
 	wcd9xxx_inf_la = wcd9xxx->slim_slave->laddr;
@@ -1402,6 +1406,7 @@ static int wcd9xxx_slim_probe(struct slim_device *slim)
 		(void *) "slimslave_reg_dump", &codec_debug_ops);
 	}
 #endif
+	dev_info(&slim->dev, "%s() leave\n", __func__);
 
 	return ret;
 

@@ -173,4 +173,8 @@ config PCI_HISI
 	help
 	  Say Y here if you want PCIe controller support on HiSilicon HIP05 SoC
 
+config SEC_BSP_PCIE_DEV
+	depends on PCI_MSM
+	bool "PCI_MSM dev feature"
+
 endmenu

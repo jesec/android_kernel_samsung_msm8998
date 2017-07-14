@@ -17,6 +17,7 @@
 #include <linux/compat.h>
 #include <linux/swap.h>
 #include <linux/falloc.h>
+#include <linux/statfs.h>
 #include <linux/uio.h>
 
 static const struct file_operations fuse_direct_io_file_operations;
@@ -876,6 +877,43 @@ static int fuse_readpages_fill(void *_data, struct page *page)
 		return -EIO;
 	}
 
+#ifdef CONFIG_CMA
+	if (is_cma_pageblock(page)) {
+		struct page *oldpage = page, *newpage;
+		int err;
+
+		/* make sure that old page is not free in-between the calls */
+		page_cache_get(oldpage);
+
+		newpage = alloc_page(GFP_HIGHUSER);
+		if (!newpage) {
+			page_cache_release(oldpage);
+			return -ENOMEM;
+		}
+
+		err = replace_page_cache_page(oldpage, newpage, GFP_KERNEL);
+		if (err) {
+			__free_page(newpage);
+			page_cache_release(oldpage);
+			return err;
+		}
+
+		/*
+		 * Decrement the count on new page to make page cache the only
+		 * owner of it
+		 */
+		lock_page(newpage);
+		put_page(newpage);
+
+		lru_cache_add_file(newpage);
+
+		/* finally release the old page and swap pointers */
+		unlock_page(oldpage);
+		page_cache_release(oldpage);
+		page = newpage;
+	}
+#endif
+
 	page_cache_get(page);
 	req->pages[req->num_pages] = page;
 	req->page_descs[req->num_pages].length = PAGE_SIZE;
@@ -1173,6 +1211,69 @@ static ssize_t fuse_perform_write(struct file *file,
 	return res > 0 ? res : err;
 }
 
+/*
+ * Return 0, if a disk has enough free space.
+ * Return error, if vfs_statfs is failed, otherwise -ENOSPC.
+ * We assume that any files can not be overwritten.
+ */
+static inline int check_min_free_space(struct path *lower_path, size_t size,
+					unsigned int reserved_mb)
+{
+	int err;
+	struct kstatfs statfs;
+	u64 avail;
+
+	BUG_ON(!lower_path);
+
+	if (!reserved_mb)
+		return 0;
+
+	/* Get fs stat of lower filesystem. */
+	err = vfs_statfs(lower_path, &statfs);
+	if (unlikely(err)) {
+		printk(KERN_ERR "vfs_statfs error : %d\n", err);
+		return err;
+	}
+
+	/* Invalid statfs informations. */
+	if (unlikely(statfs.f_bsize == 0))
+		goto out_invalid;
+
+	/* available size */
+	avail = statfs.f_bavail * statfs.f_bsize;
+
+	/* not enough space */
+	if ((u64)size > avail)
+		goto out_nospc;
+
+	/* not enough space */
+	if ((avail - size) < ((u64)reserved_mb << 20))
+		goto out_nospc;
+
+	return 0;
+
+out_invalid:
+	printk(KERN_INFO "statfs               : invalid return\n");
+	printk(KERN_INFO "statfs.f_type        : 0x%X\n", (u32)statfs.f_type);
+	printk(KERN_INFO "statfs.f_blocks      : %llu blocks\n", statfs.f_blocks);
+	printk(KERN_INFO "statfs.f_bfree       : %llu blocks\n", statfs.f_bfree);
+	printk(KERN_INFO "statfs.f_files       : %llu\n", statfs.f_files);
+	printk(KERN_INFO "statfs.f_ffree       : %llu\n", statfs.f_ffree);
+	printk(KERN_INFO "statfs.f_fsid.val[1] : 0x%X\n", (u32)statfs.f_fsid.val[1]);
+	printk(KERN_INFO "statfs.f_fsid.val[0] : 0x%X\n", (u32)statfs.f_fsid.val[0]);
+	printk(KERN_INFO "statfs.f_namelen     : %ld\n", statfs.f_namelen);
+	printk(KERN_INFO "statfs.f_frsize      : %ld\n", statfs.f_frsize);
+	printk(KERN_INFO "statfs.f_flags       : %ld\n", statfs.f_flags);
+	printk(KERN_INFO "fuse reserved_mb : %u\n", reserved_mb);
+
+out_nospc:
+	printk_ratelimited(KERN_INFO "statfs.f_bavail : %llu blocks / "
+				     "statfs.f_bsize : %ld bytes / "
+				     "required size : %llu byte\n"
+				,statfs.f_bavail, statfs.f_bsize, (u64)size);
+	return -ENOSPC;
+}
+
 static ssize_t fuse_file_write_iter(struct kiocb *iocb, struct iov_iter *from)
 {
 	struct file *file = iocb->ki_filp;
@@ -1211,6 +1312,11 @@ static ssize_t fuse_file_write_iter(struct kiocb *iocb, struct iov_iter *from)
 		goto out;
 
 	if (ff && ff->passthrough_enabled && ff->passthrough_filp) {
+		err = check_min_free_space(&ff->passthrough_filp->f_path,
+				iov_iter_count(from), ff->fc->reserved_space_mb);
+		if (err)
+			goto out;
+
 		written = fuse_passthrough_write_iter(iocb, from);
 		goto out;
 	}

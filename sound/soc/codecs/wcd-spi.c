@@ -1,5 +1,4 @@
-/*
- * Copyright (c) 2016, The Linux Foundation. All rights reserved.
+/* Copyright (c) 2016-2017, The Linux Foundation. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -60,7 +59,8 @@
 
 /* Command delays */
 #define WCD_SPI_CLKREQ_DELAY_USECS (500)
-#define WCD_SPI_CLK_OFF_TIMER_MS   (3000)
+#define WCD_SPI_CLK_OFF_TIMER_MS   (500)
+#define WCD_SPI_RESUME_TIMEOUT_MS 100
 
 /* Command masks */
 #define WCD_CMD_ADDR_MASK            \
@@ -81,8 +81,11 @@
 #define WCD_SPI_WORD_BYTE_CNT (4)
 #define WCD_SPI_RW_MULTI_MIN_LEN (16)
 
-/* Max size is closest multiple of 16 less than 64Kbytes */
-#define WCD_SPI_RW_MULTI_MAX_LEN ((64 * 1024) - 16)
+/* Max size is 32 bytes less than 64Kbytes */
+#define WCD_SPI_RW_MULTI_MAX_LEN ((64 * 1024) - 32)
+
+/* Max size for the pre-allocated buffers */
+#define WCD_SPI_RW_MAX_BUF_SIZE (64 * 1024)
 
 /* Alignment requirements */
 #define WCD_SPI_RW_MIN_ALIGN    WCD_SPI_WORD_BYTE_CNT
@@ -90,6 +93,7 @@
 
 /* Status mask bits */
 #define WCD_SPI_CLK_STATE_ENABLED BIT(0)
+#define WCD_SPI_IS_SUSPENDED BIT(1)
 
 /* Locking related */
 #define WCD_SPI_MUTEX_LOCK(spi, lock)              \
@@ -144,6 +148,13 @@ struct wcd_spi_priv {
 
 	/* Debugfs related information */
 	struct wcd_spi_debug_data debug_data;
+
+	/* Completion object to indicate system resume completion */
+	struct completion resume_comp;
+
+	/* Buffers to hold memory used for transfers */
+	void *tx_buf;
+	void *rx_buf;
 };
 
 enum xfer_request {
@@ -170,23 +181,73 @@ static void wcd_spi_reinit_xfer(struct spi_transfer *xfer)
 	xfer->len = 0;
 }
 
+static bool wcd_spi_is_suspended(struct wcd_spi_priv *wcd_spi)
+{
+	return test_bit(WCD_SPI_IS_SUSPENDED, &wcd_spi->status_mask);
+}
+
+static bool wcd_spi_can_suspend(struct wcd_spi_priv *wcd_spi)
+{
+	struct spi_device *spi = wcd_spi->spi;
+
+	if (wcd_spi->clk_users > 0 ||
+	    test_bit(WCD_SPI_CLK_STATE_ENABLED, &wcd_spi->status_mask)) {
+		dev_err(&spi->dev, "%s: cannot suspend, clk_users = %d\n",
+			__func__, wcd_spi->clk_users);
+		return false;
+	}
+
+	return true;
+}
+
+static int wcd_spi_wait_for_resume(struct wcd_spi_priv *wcd_spi)
+{
+	struct spi_device *spi = wcd_spi->spi;
+	int rc = 0;
+
+	WCD_SPI_MUTEX_LOCK(spi, wcd_spi->clk_mutex);
+	/* If the system is already in resumed state, return right away */
+	if (!wcd_spi_is_suspended(wcd_spi))
+		goto done;
+
+	/* If suspended then wait for resume to happen */
+	reinit_completion(&wcd_spi->resume_comp);
+	WCD_SPI_MUTEX_UNLOCK(spi, wcd_spi->clk_mutex);
+	rc = wait_for_completion_timeout(&wcd_spi->resume_comp,
+				msecs_to_jiffies(WCD_SPI_RESUME_TIMEOUT_MS));
+	WCD_SPI_MUTEX_LOCK(spi, wcd_spi->clk_mutex);
+	if (rc == 0) {
+		dev_err(&spi->dev, "%s: failed to resume in %u msec\n",
+			__func__, WCD_SPI_RESUME_TIMEOUT_MS);
+		rc = -EIO;
+		goto done;
+	}
+
+	dev_dbg(&spi->dev, "%s: resume successful\n", __func__);
+	rc = 0;
+done:
+	WCD_SPI_MUTEX_UNLOCK(spi, wcd_spi->clk_mutex);
+	return rc;
+}
+
 static int wcd_spi_read_single(struct spi_device *spi,
 			       u32 remote_addr, u32 *val)
 {
 	struct wcd_spi_priv *wcd_spi = spi_get_drvdata(spi);
 	struct spi_transfer *tx_xfer = &wcd_spi->xfer2[0];
 	struct spi_transfer *rx_xfer = &wcd_spi->xfer2[1];
-	u8 *tx_buf;
+	u8 *tx_buf = wcd_spi->tx_buf;
 	u32 frame = 0;
 	int ret;
 
 	dev_dbg(&spi->dev, "%s: remote_addr = 0x%x\n",
 		__func__, remote_addr);
 
-	tx_buf = kzalloc(WCD_SPI_READ_SINGLE_LEN,
-			 GFP_KERNEL | GFP_DMA);
-	if (!tx_buf)
+	if (!wcd_spi->tx_buf) {
+		dev_err(&spi->dev, "%s: tx_buf not allocated\n",
+			__func__);
 		return -ENOMEM;
+	}
 
 	frame |= WCD_SPI_READ_FRAME_OPCODE;
 	frame |= remote_addr & WCD_CMD_ADDR_MASK;
@@ -202,7 +263,6 @@ static int wcd_spi_read_single(struct spi_device *spi,
 	rx_xfer->len = sizeof(*val);
 
 	ret = spi_sync(spi, &wcd_spi->msg2);
-	kfree(tx_buf);
 
 	return ret;
 }
@@ -213,8 +273,8 @@ static int wcd_spi_read_multi(struct spi_device *spi,
 {
 	struct wcd_spi_priv *wcd_spi = spi_get_drvdata(spi);
 	struct spi_transfer *xfer = &wcd_spi->xfer1;
-	u8 *tx_buf;
-	u8 *rx_buf;
+	u8 *tx_buf = wcd_spi->tx_buf;
+	u8 *rx_buf = wcd_spi->rx_buf;
 	u32 frame = 0;
 	int ret;
 
@@ -224,15 +284,9 @@ static int wcd_spi_read_multi(struct spi_device *spi,
 	frame |= WCD_SPI_FREAD_FRAME_OPCODE;
 	frame |= remote_addr & WCD_CMD_ADDR_MASK;
 
-	tx_buf = kzalloc(WCD_SPI_CMD_FREAD_LEN + len,
-			 GFP_KERNEL | GFP_DMA);
-	if (!tx_buf)
-		return -ENOMEM;
-
-	rx_buf = kzalloc(WCD_SPI_CMD_FREAD_LEN + len,
-			 GFP_KERNEL | GFP_DMA);
-	if (!rx_buf) {
-		kfree(tx_buf);
+	if (!tx_buf || !rx_buf) {
+		dev_err(&spi->dev, "%s: tx_buf not allocated\n",
+			__func__);
 		return -ENOMEM;
 	}
 
@@ -252,8 +306,6 @@ static int wcd_spi_read_multi(struct spi_device *spi,
 
 	memcpy(data, rx_buf + WCD_SPI_CMD_FREAD_LEN, len);
 done:
-	kfree(tx_buf);
-	kfree(rx_buf);
 	return ret;
 }
 
@@ -290,7 +342,7 @@ static int wcd_spi_write_multi(struct spi_device *spi,
 	struct wcd_spi_priv *wcd_spi = spi_get_drvdata(spi);
 	struct spi_transfer *xfer = &wcd_spi->xfer1;
 	u32 frame = 0;
-	u8 *tx_buf;
+	u8 *tx_buf = wcd_spi->tx_buf;
 	int xfer_len, ret;
 
 	dev_dbg(&spi->dev, "%s: addr = 0x%x len = %zd\n",
@@ -302,9 +354,11 @@ static int wcd_spi_write_multi(struct spi_device *spi,
 	frame = cpu_to_be32(frame);
 	xfer_len = len + sizeof(frame);
 
-	tx_buf = kzalloc(xfer_len, GFP_KERNEL);
-	if (!tx_buf)
+	if (!tx_buf) {
+		dev_err(&spi->dev, "%s: tx_buf not allocated\n",
+			__func__);
 		return -ENOMEM;
+	}
 
 	memcpy(tx_buf, &frame, sizeof(frame));
 	memcpy(tx_buf + sizeof(frame), data, len);
@@ -318,8 +372,6 @@ static int wcd_spi_write_multi(struct spi_device *spi,
 		dev_err(&spi->dev,
 			"%s: Failed, addr = 0x%x, len = %zd\n",
 			__func__, remote_addr, len);
-	kfree(tx_buf);
-
 	return ret;
 }
 
@@ -579,6 +631,18 @@ static int wcd_spi_clk_ctrl(struct spi_device *spi,
 	}
 
 	if (request == WCD_SPI_CLK_ENABLE) {
+		/*
+		 * If the SPI bus is suspended, then return error
+		 * as the transaction cannot be completed.
+		 */
+		if (wcd_spi_is_suspended(wcd_spi)) {
+			dev_err(&spi->dev,
+				"%s: SPI suspended, cannot enable clk\n",
+				__func__);
+			ret = -EIO;
+			goto done;
+		}
+
 		/* Cancel the disable clk work */
 		WCD_SPI_MUTEX_UNLOCK(spi, wcd_spi->clk_mutex);
 		cancel_delayed_work_sync(&wcd_spi->clk_dwork);
@@ -855,12 +919,22 @@ static int wdsp_spi_event_handler(struct device *dev, void *priv_data,
 				  void *data)
 {
 	struct spi_device *spi = to_spi_device(dev);
+	struct wcd_spi_priv *wcd_spi = spi_get_drvdata(spi);
 	int ret = 0;
 
 	dev_dbg(&spi->dev, "%s: event type %d\n",
 		__func__, event);
 
 	switch (event) {
+	case WDSP_EVENT_POST_SHUTDOWN:
+		cancel_delayed_work_sync(&wcd_spi->clk_dwork);
+		WCD_SPI_MUTEX_LOCK(spi, wcd_spi->clk_mutex);
+		if (test_bit(WCD_SPI_CLK_STATE_ENABLED, &wcd_spi->status_mask))
+			wcd_spi_clk_disable(spi);
+		wcd_spi->clk_users = 0;
+		WCD_SPI_MUTEX_UNLOCK(spi, wcd_spi->clk_mutex);
+		break;
+
 	case WDSP_EVENT_PRE_DLOAD_CODE:
 	case WDSP_EVENT_PRE_DLOAD_DATA:
 		ret = wcd_spi_clk_ctrl(spi, WCD_SPI_CLK_ENABLE,
@@ -887,6 +961,17 @@ static int wdsp_spi_event_handler(struct device *dev, void *priv_data,
 
 	case WDSP_EVENT_READ_SECTION:
 		ret = wdsp_spi_read_section(spi, data);
+		break;
+
+	case WDSP_EVENT_SUSPEND:
+		WCD_SPI_MUTEX_LOCK(spi, wcd_spi->clk_mutex);
+		if (!wcd_spi_can_suspend(wcd_spi))
+			ret = -EBUSY;
+		WCD_SPI_MUTEX_UNLOCK(spi, wcd_spi->clk_mutex);
+		break;
+
+	case WDSP_EVENT_RESUME:
+		ret = wcd_spi_wait_for_resume(wcd_spi);
 		break;
 
 	default:
@@ -1244,6 +1329,23 @@ static int wcd_spi_component_bind(struct device *dev,
 	spi_message_init(&wcd_spi->msg2);
 	spi_message_add_tail(&wcd_spi->xfer2[0], &wcd_spi->msg2);
 	spi_message_add_tail(&wcd_spi->xfer2[1], &wcd_spi->msg2);
+
+	/* Pre-allocate the buffers */
+	wcd_spi->tx_buf = kzalloc(WCD_SPI_RW_MAX_BUF_SIZE,
+				  GFP_KERNEL | GFP_DMA);
+	if (!wcd_spi->tx_buf) {
+		ret = -ENOMEM;
+		goto done;
+	}
+
+	wcd_spi->rx_buf = kzalloc(WCD_SPI_RW_MAX_BUF_SIZE,
+				  GFP_KERNEL | GFP_DMA);
+	if (!wcd_spi->rx_buf) {
+		kfree(wcd_spi->tx_buf);
+		wcd_spi->tx_buf = NULL;
+		ret = -ENOMEM;
+		goto done;
+	}
 done:
 	return ret;
 }
@@ -1261,6 +1363,11 @@ static void wcd_spi_component_unbind(struct device *dev,
 	spi_transfer_del(&wcd_spi->xfer1);
 	spi_transfer_del(&wcd_spi->xfer2[0]);
 	spi_transfer_del(&wcd_spi->xfer2[1]);
+
+	kfree(wcd_spi->tx_buf);
+	kfree(wcd_spi->rx_buf);
+	wcd_spi->tx_buf = NULL;
+	wcd_spi->rx_buf = NULL;
 }
 
 static const struct component_ops wcd_spi_component_ops = {
@@ -1293,6 +1400,7 @@ static int wcd_spi_probe(struct spi_device *spi)
 	mutex_init(&wcd_spi->clk_mutex);
 	mutex_init(&wcd_spi->xfer_mutex);
 	INIT_DELAYED_WORK(&wcd_spi->clk_dwork, wcd_spi_clk_work);
+	init_completion(&wcd_spi->resume_comp);
 
 	wcd_spi->spi = spi;
 	spi_set_drvdata(spi, wcd_spi);
@@ -1330,6 +1438,61 @@ static int wcd_spi_remove(struct spi_device *spi)
 	return 0;
 }
 
+#ifdef CONFIG_PM
+static int wcd_spi_suspend(struct device *dev)
+{
+	struct spi_device *spi = to_spi_device(dev);
+	struct wcd_spi_priv *wcd_spi = spi_get_drvdata(spi);
+	int rc = 0;
+
+	WCD_SPI_MUTEX_LOCK(spi, wcd_spi->clk_mutex);
+	if (!wcd_spi_can_suspend(wcd_spi)) {
+		rc = -EBUSY;
+		goto done;
+	}
+
+	/*
+	 * If we are here, it is okay to let the suspend go
+	 * through for this driver. But, still need to notify
+	 * the master to make sure all other components can suspend
+	 * as well.
+	 */
+	if (wcd_spi->m_dev && wcd_spi->m_ops &&
+	  wcd_spi->m_ops->suspend) {
+		WCD_SPI_MUTEX_UNLOCK(spi, wcd_spi->clk_mutex);
+		rc = wcd_spi->m_ops->suspend(wcd_spi->m_dev);
+		WCD_SPI_MUTEX_LOCK(spi, wcd_spi->clk_mutex);
+	}
+
+	if (rc == 0)
+		set_bit(WCD_SPI_IS_SUSPENDED, &wcd_spi->status_mask);
+	else
+		dev_dbg(&spi->dev, "%s: cannot suspend, err = %d\n",
+			__func__, rc);
+done:
+	WCD_SPI_MUTEX_UNLOCK(spi, wcd_spi->clk_mutex);
+	return rc;
+}
+
+static int wcd_spi_resume(struct device *dev)
+{
+	struct spi_device *spi = to_spi_device(dev);
+	struct wcd_spi_priv *wcd_spi = spi_get_drvdata(spi);
+
+	WCD_SPI_MUTEX_LOCK(spi, wcd_spi->clk_mutex);
+	clear_bit(WCD_SPI_IS_SUSPENDED, &wcd_spi->status_mask);
+	complete(&wcd_spi->resume_comp);
+	WCD_SPI_MUTEX_UNLOCK(spi, wcd_spi->clk_mutex);
+
+	return 0;
+}
+
+static const struct dev_pm_ops wcd_spi_pm_ops = {
+	.suspend = wcd_spi_suspend,
+	.resume = wcd_spi_resume,
+};
+#endif
+
 static const struct of_device_id wcd_spi_of_match[] = {
 	{ .compatible = "qcom,wcd-spi-v2", },
 	{ }
@@ -1340,6 +1503,9 @@ static struct spi_driver wcd_spi_driver = {
 	.driver = {
 		.name = "wcd-spi-v2",
 		.of_match_table = wcd_spi_of_match,
+#ifdef CONFIG_PM
+		.pm = &wcd_spi_pm_ops,
+#endif
 	},
 	.probe = wcd_spi_probe,
 	.remove = wcd_spi_remove,

@@ -201,6 +201,7 @@ struct ion_heap {
 
 	int (*debug_show)(struct ion_heap *heap, struct seq_file *, void *);
 	atomic_t total_allocated;
+	atomic_t total_allocated_peak;
 	atomic_t total_handles;
 };
 

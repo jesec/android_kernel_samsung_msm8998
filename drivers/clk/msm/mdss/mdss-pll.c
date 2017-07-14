@@ -25,6 +25,9 @@
 #include "mdss-dsi-pll.h"
 #include "mdss-hdmi-pll.h"
 #include "mdss-dp-pll.h"
+#if defined(CONFIG_FB_MSM_MDSS_SAMSUNG)
+#include "../../../video/fbdev/msm/samsung/ss_dsi_panel_common.h" /* UTIL HEADER */
+#endif
 
 int mdss_pll_resource_enable(struct mdss_pll_resources *pll_res, bool enable)
 {
@@ -219,6 +222,10 @@ static int mdss_pll_probe(struct platform_device *pdev)
 	struct resource *dynamic_pll_base_reg;
 	struct resource *gdsc_base_reg;
 	struct mdss_pll_resources *pll_res;
+#if defined(CONFIG_FB_MSM_MDSS_SAMSUNG)
+	struct samsung_display_driver_data *vdd = samsung_get_vdd();
+	bool is_valid_pll_base = false;
+#endif
 
 	if (!pdev->dev.of_node) {
 		pr_err("MDSS pll driver only supports device tree probe\n");
@@ -231,6 +238,11 @@ static int mdss_pll_probe(struct platform_device *pdev)
 		pr_info("%d: MDSS pll label not specified\n", __LINE__);
 	else
 		pr_info("MDSS pll label = %s\n", label);
+
+#if defined(CONFIG_FB_MSM_MDSS_SAMSUNG)
+	if (label && (!strcmp(label, "MDSS DSI 0 PLL") || !strcmp(label, "MDSS DSI 1 PLL")))
+		is_valid_pll_base = true;
+#endif
 
 	pll_res = devm_kzalloc(&pdev->dev, sizeof(struct mdss_pll_resources),
 								GFP_KERNEL);
@@ -284,6 +296,10 @@ static int mdss_pll_probe(struct platform_device *pdev)
 		rc = -ENOMEM;
 		goto io_error;
 	}
+#if defined(CONFIG_FB_MSM_MDSS_SAMSUNG)
+	if (is_valid_pll_base)
+		vdd->dump_info[pll_res->index].dsi_pll.virtual_addr = (size_t)pll_res->pll_base;
+#endif
 
 	pr_debug("%s: ndx=%d base=%p\n", __func__,
 			pll_res->index, pll_res->pll_base);

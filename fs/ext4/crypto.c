@@ -34,6 +34,7 @@
 #include <linux/random.h>
 #include <linux/scatterlist.h>
 #include <linux/spinlock_types.h>
+#include <linux/namei.h>
 
 #include "ext4_extents.h"
 #include "xattr.h"
@@ -142,6 +143,9 @@ out:
 }
 
 struct workqueue_struct *ext4_read_workqueue;
+#if defined(CONFIG_EXT4_SEC_CRYPTO_EXTENSION) && defined (CONFIG_CRYPTO_FIPS)
+struct crypto_rng *ext4_crypto_rng;
+#endif
 static DEFINE_MUTEX(crypto_init);
 
 /**
@@ -166,6 +170,11 @@ void ext4_exit_crypto(void)
 	if (ext4_crypt_info_cachep)
 		kmem_cache_destroy(ext4_crypt_info_cachep);
 	ext4_crypt_info_cachep = NULL;
+#if defined(CONFIG_EXT4_SEC_CRYPTO_EXTENSION) && defined (CONFIG_CRYPTO_FIPS)
+	if (ext4_crypto_rng)
+		ext4_sec_free_rng(ext4_crypto_rng);
+	ext4_crypto_rng = NULL;
+#endif
 }
 
 /**
@@ -388,14 +397,12 @@ int ext4_decrypt(struct page *page)
 				page->index, page, page, GFP_NOFS);
 }
 
-int ext4_encrypted_zeroout(struct inode *inode, struct ext4_extent *ex)
+int ext4_encrypted_zeroout(struct inode *inode, ext4_lblk_t lblk,
+			   ext4_fsblk_t pblk, ext4_lblk_t len)
 {
 	struct ext4_crypto_ctx	*ctx;
 	struct page		*ciphertext_page = NULL;
 	struct bio		*bio;
-	ext4_lblk_t		lblk = le32_to_cpu(ex->ee_block);
-	ext4_fsblk_t		pblk = ext4_ext_pblock(ex);
-	unsigned int		len = ext4_ext_get_actual_len(ex);
 	int			ret, err = 0;
 
 #if 0
@@ -486,6 +493,9 @@ static int ext4_d_revalidate(struct dentry *dentry, unsigned int flags)
 	struct dentry *dir;
 	struct ext4_crypt_info *ci;
 	int dir_has_key, cached_with_key;
+
+	if (flags & LOOKUP_RCU)
+		return -ECHILD;
 
 	dir = dget_parent(dentry);
 	if (!ext4_encrypted_inode(d_inode(dir))) {

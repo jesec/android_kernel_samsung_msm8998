@@ -28,6 +28,39 @@ struct msm_eeprom_ctrl_t;
 	static struct mutex mutexname = __MUTEX_INITIALIZER(mutexname)
 
 #define PROPERTY_MAXSIZE 32
+#define FRONT_CAM_MAP_VERSION_ADDR          0x0043
+#define REAR_CAM_MAP_VERSION_ADDR           0x0063
+
+#define FROM_REAR_AF_CAL_PAN_ADDR           0x3C24
+#define FROM_REAR_AF_CAL_MACRO_ADDR         0x3C30
+#define FROM_REAR_AF_CAL_MID_ADDR           0x3C2C
+#define FROM_FRONT_AF_CAL_PAN_ADDR          0x0104
+#define FROM_FRONT_AF_CAL_MACRO_ADDR        0x0110
+#define FROM_FRONT_SENSOR_ID_ADDR           0x0054
+#define FROM_REAR_SENSOR_ID_ADDR            0x00B8
+#if 1//defined(CONFIG_SAMSUNG_MULTI_CAMERA)
+#define FROM_REAR2_AF_CAL_PAN_ADDR          0x5554
+#define FROM_REAR2_AF_CAL_MACRO_ADDR        0x5560
+#define FROM_REAR2_AF_CAL_MID_ADDR          0x555C
+#define FROM_REAR2_SENSOR_ID_ADDR           0x00C8
+#endif
+
+#define FROM_SENSOR_ID_SIZE                 16
+
+/* Module ID : 0x00A8~0x00B7(16Byte) for FROM, EEPROM (Don't support OTP)*/
+#define FROM_MODULE_ID_ADDR                 0x00AE
+#define FROM_MODULE_ID_SIZE                 10
+
+/* MTF exif : 0x0064~0x0099(54Byte) for FROM, EEPROM */
+#define FROM_REAR_MTF_ADDR            0x0170
+#define FROM_FRONT_MTF_ADDR           0x0064
+#if 1//defined(CONFIG_SAMSUNG_MULTI_CAMERA)
+#define FROM_REAR2_MTF_ADDR           0x01A6
+#endif
+#define FROM_MTF_SIZE                 54
+
+#define I2C_BAM_MAX_SIZE              (0xEC0)
+#define SPI_TRANSFER_MAX_SIZE         (0x20000) //  128K
 
 struct msm_eeprom_ctrl_t {
 	struct platform_device *pdev;
@@ -45,7 +78,7 @@ struct msm_eeprom_ctrl_t {
 	uint32_t subdev_id;
 	int32_t userspace_probe;
 	struct msm_eeprom_memory_block_t cal_data;
-	uint8_t is_supported;
+	uint16_t is_supported;
 };
 
 #endif

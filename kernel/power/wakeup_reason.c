@@ -41,6 +41,11 @@ static ktime_t curr_monotime; /* monotonic time after last suspend */
 static ktime_t last_stime; /* monotonic boottime offset before last suspend */
 static ktime_t curr_stime; /* monotonic boottime offset after last suspend */
 
+#ifdef CONFIG_SEC_PM
+char last_resume_kernel_reason[512];
+int last_resume_kernel_reason_len;
+#endif
+
 static ssize_t last_resume_reason_show(struct kobject *kobj, struct kobj_attribute *attr,
 		char *buf)
 {
@@ -50,6 +55,13 @@ static ssize_t last_resume_reason_show(struct kobject *kobj, struct kobj_attribu
 	if (suspend_abort) {
 		buf_offset = sprintf(buf, "Abort: %s", abort_reason);
 	} else {
+#ifdef CONFIG_SEC_PM
+		pr_err("%s: %s(%d)\n", __func__,
+			last_resume_kernel_reason,
+			last_resume_kernel_reason_len);
+		buf_offset += sprintf(buf + buf_offset, "%d %s\n",
+				0, last_resume_kernel_reason);
+#endif
 		for (irq_no = 0; irq_no < irqcount; irq_no++) {
 			desc = irq_to_desc(irq_list[irq_no]);
 			if (desc && desc->action && desc->action->name)
@@ -178,6 +190,11 @@ static int wakeup_reason_pm_event(struct notifier_block *notifier,
 		last_monotime = ktime_get();
 		/* monotonic time since boot including the time spent in suspend */
 		last_stime = ktime_get_boottime();
+#ifdef CONFIG_SEC_PM
+		/* reset resume kernel reason buffer */
+		last_resume_kernel_reason[0] = '\0';
+		last_resume_kernel_reason_len = 0;
+#endif
 		break;
 	case PM_POST_SUSPEND:
 		/* monotonic time since boot */
@@ -219,6 +236,12 @@ int __init wakeup_reason_init(void)
 		printk(KERN_WARNING "[%s] failed to create a sysfs group %d\n",
 				__func__, retval);
 	}
+
+#ifdef CONFIG_SEC_PM
+	/* reset resume kernel reason buffer */
+	last_resume_kernel_reason[0] = '\0';
+	last_resume_kernel_reason_len = 0;
+#endif
 	return 0;
 }
 

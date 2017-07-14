@@ -295,6 +295,7 @@ static ssize_t diag_dbgfs_read_table(struct file *file, char __user *ubuf,
 		bytes_remaining -= bytes_written;
 	}
 
+	mutex_lock(&driver->cmd_reg_mutex);
 	list_for_each_safe(start, temp, &driver->cmd_reg_list) {
 		item = list_entry(start, struct diag_cmd_reg_t, link);
 		if (i < diag_dbgfs_table_index) {
@@ -323,6 +324,7 @@ static ssize_t diag_dbgfs_read_table(struct file *file, char __user *ubuf,
 		if (bytes_remaining < bytes_written)
 			break;
 	}
+	mutex_unlock(&driver->cmd_reg_mutex);
 	diag_dbgfs_table_index = i;
 
 	*ppos = 0;

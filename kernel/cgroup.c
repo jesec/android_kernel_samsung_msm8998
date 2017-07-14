@@ -4401,6 +4401,8 @@ static int pidlist_array_load(struct cgroup *cgrp, enum cgroup_filetype type,
 	array = pidlist_allocate(length);
 	if (!array)
 		return -ENOMEM;
+
+	rcu_read_lock();
 	/* now, populate the array */
 	css_task_iter_start(&cgrp->self, &it);
 	while ((tsk = css_task_iter_next(&it))) {
@@ -4415,6 +4417,8 @@ static int pidlist_array_load(struct cgroup *cgrp, enum cgroup_filetype type,
 			array[n++] = pid;
 	}
 	css_task_iter_end(&it);
+	rcu_read_unlock();
+
 	length = n;
 	/* now sort & (if procs) strip out duplicates */
 	if (cgroup_on_dfl(cgrp))

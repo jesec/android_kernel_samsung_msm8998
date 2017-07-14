@@ -1,4 +1,4 @@
-/* Copyright (c) 2014-2015, The Linux Foundation. All rights reserved.
+/* Copyright (c) 2014-2016, The Linux Foundation. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -1149,10 +1149,16 @@ static void i2c_msm_dma_xfer_unprepare(struct i2c_msm_ctrl *ctrl)
 							buf_itr->dma_dir);
 }
 
-static void i2c_msm_dma_callback_xfer_complete(void *dma_async_param)
+static void i2c_msm_dma_callback_tx_complete(void *dma_async_param)
 {
 	struct i2c_msm_ctrl *ctrl = dma_async_param;
 	complete(&ctrl->xfer.complete);
+}
+
+static void i2c_msm_dma_callback_rx_complete(void *dma_async_param)
+{
+	struct i2c_msm_ctrl *ctrl = dma_async_param;
+	complete(&ctrl->xfer.rx_complete);
 }
 
 /*
@@ -1267,14 +1273,14 @@ static int i2c_msm_dma_xfer_process(struct i2c_msm_ctrl *ctrl)
 	}
 
 	/* callback defined for tx dma desc */
-	dma_desc_tx->callback       = i2c_msm_dma_callback_xfer_complete;
+	dma_desc_tx->callback = i2c_msm_dma_callback_tx_complete;
 	dma_desc_tx->callback_param = ctrl;
 	dmaengine_submit(dma_desc_tx);
 	dma_async_issue_pending(tx->dma_chan);
 
 	/* queue the rx dma desc */
 	dma_desc_rx = dmaengine_prep_slave_sg(rx->dma_chan, sg_rx,
-					sg_rx_itr - sg_rx, rx->dir, 0);
+						sg_rx_itr - sg_rx, rx->dir, (SPS_IOVEC_FLAG_EOT | SPS_IOVEC_FLAG_NWD));
 	if (dma_desc_rx < 0) {
 		dev_err(ctrl->dev,
 			"error dmaengine_prep_slave_sg rx:%ld\n",
@@ -1282,7 +1288,8 @@ static int i2c_msm_dma_xfer_process(struct i2c_msm_ctrl *ctrl)
 		ret = PTR_ERR(dma_desc_rx);
 		goto dma_xfer_end;
 	}
-
+	dma_desc_rx->callback = i2c_msm_dma_callback_rx_complete;
+	dma_desc_rx->callback_param = ctrl;
 	dmaengine_submit(dma_desc_rx);
 	dma_async_issue_pending(rx->dma_chan);
 
@@ -1295,7 +1302,8 @@ static int i2c_msm_dma_xfer_process(struct i2c_msm_ctrl *ctrl)
 	}
 
 	ret = i2c_msm_xfer_wait_for_completion(ctrl, &ctrl->xfer.complete);
-
+	if (!ret && ctrl->xfer.rx_cnt)
+		i2c_msm_xfer_wait_for_completion(ctrl, &ctrl->xfer.rx_complete);
 dma_xfer_end:
 	/* free scatter-gather lists */
 	kfree(sg_tx);
@@ -2236,12 +2244,12 @@ static void i2c_msm_pm_xfer_end(struct i2c_msm_ctrl *ctrl)
 		i2c_msm_dma_free_channels(ctrl);
 
 	i2c_msm_pm_clk_disable_unprepare(ctrl);
-	if (pm_runtime_enabled(ctrl->dev)) {
-		pm_runtime_mark_last_busy(ctrl->dev);
-		pm_runtime_put_autosuspend(ctrl->dev);
-	} else {
+
+	if (!pm_runtime_enabled(ctrl->dev))
 		i2c_msm_pm_suspend(ctrl->dev);
-	}
+
+	pm_runtime_mark_last_busy(ctrl->dev);
+	pm_runtime_put_autosuspend(ctrl->dev);
 	mutex_unlock(&ctrl->xfer.mtx);
 }
 
@@ -2296,6 +2304,7 @@ i2c_msm_frmwrk_xfer(struct i2c_adapter *adap, struct i2c_msg msgs[], int num)
 	xfer->tx_ovrhd_cnt = 0;
 	atomic_set(&xfer->event_cnt, 0);
 	init_completion(&xfer->complete);
+	init_completion(&xfer->rx_complete);
 	xfer->cur_buf.is_init = false;
 	xfer->cur_buf.msg_idx = 0;
 

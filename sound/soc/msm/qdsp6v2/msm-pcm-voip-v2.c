@@ -32,6 +32,7 @@
 #include "q6voice.h"
 
 #define SHARED_MEM_BUF 2
+#define VOIP_MIN_Q_LEN 2
 #define VOIP_MAX_Q_LEN 10
 #define VOIP_MAX_VOC_PKT_SIZE 4096
 #define VOIP_MIN_VOC_PKT_SIZE 320
@@ -205,10 +206,10 @@ static struct snd_pcm_hardware msm_pcm_hardware = {
 	.rate_max =             48000,
 	.channels_min =         1,
 	.channels_max =         1,
-	.buffer_bytes_max =	sizeof(struct voip_buf_node) * VOIP_MAX_Q_LEN,
+	.buffer_bytes_max =	sizeof(struct voip_buf_node) * VOIP_MIN_Q_LEN,
 	.period_bytes_min =	VOIP_MIN_VOC_PKT_SIZE,
 	.period_bytes_max =	VOIP_MAX_VOC_PKT_SIZE,
-	.periods_min =		VOIP_MAX_Q_LEN,
+	.periods_min =		VOIP_MIN_Q_LEN,
 	.periods_max =		VOIP_MAX_Q_LEN,
 	.fifo_size =            0,
 };
@@ -228,7 +229,7 @@ static int msm_voip_mute_put(struct snd_kcontrol *kcontrol,
 		goto done;
 	}
 
-	pr_debug("%s: mute=%d ramp_duration=%d\n", __func__, mute,
+	pr_info("%s: mute=%d ramp_duration=%d\n", __func__, mute,
 		ramp_duration);
 
 	voc_set_tx_mute(voc_get_session_id(VOIP_SESSION_NAME), TX_PATH, mute,
@@ -252,7 +253,7 @@ static int msm_voip_gain_put(struct snd_kcontrol *kcontrol,
 		goto done;
 	}
 
-	pr_debug("%s: volume: %d ramp_duration: %d\n", __func__, volume,
+	pr_info("%s: volume: %d ramp_duration: %d\n", __func__, volume,
 		ramp_duration);
 
 	voc_set_rx_vol_step(voc_get_session_id(VOIP_SESSION_NAME),
@@ -823,6 +824,11 @@ static int msm_pcm_playback_copy(struct snd_pcm_substream *substream, int a,
 					(sizeof(buf_node->frame.frm_hdr) +
 					 sizeof(buf_node->frame.pktlen));
 			}
+			if (ret) {
+				pr_err("%s: copy from user failed %d\n",
+				       __func__, ret);
+				return -EFAULT;
+			}
 			spin_lock_irqsave(&prtd->dsp_lock, dsp_flags);
 			list_add_tail(&buf_node->list, &prtd->in_queue);
 			spin_unlock_irqrestore(&prtd->dsp_lock, dsp_flags);
@@ -1046,7 +1052,7 @@ static int voip_config_vocoder(struct snd_pcm_substream *substream)
 	uint32_t evrc_min_rate_type = 0;
 	uint32_t evrc_max_rate_type = 0;
 
-	pr_debug("%s(): mode=%d, playback rate=%d, capture rate=%d\n",
+	pr_info("%s(): mode=%d, playback rate=%d, capture rate=%d\n",
 		 __func__, prtd->mode, prtd->play_samp_rate,
 		 prtd->cap_samp_rate);
 
@@ -1263,10 +1269,16 @@ static int msm_pcm_hw_params(struct snd_pcm_substream *substream,
 	struct snd_dma_buffer *dma_buf = &substream->dma_buffer;
 	struct voip_buf_node *buf_node = NULL;
 	int i = 0, offset = 0;
+	int periods = VOIP_MIN_Q_LEN;
 
 	pr_debug("%s: voip\n", __func__);
 
 	mutex_lock(&voip_info.lock);
+
+	/* Use various voip Q size */
+	periods = params_periods(params);
+	pr_info("%s: periods = %d\n", __func__, periods);
+	runtime->hw.buffer_bytes_max = sizeof(struct voip_buf_node) * periods;
 
 	dma_buf->dev.type = SNDRV_DMA_TYPE_DEV;
 	dma_buf->dev.dev = substream->pcm->card->dev;
@@ -1285,7 +1297,7 @@ static int msm_pcm_hw_params(struct snd_pcm_substream *substream,
 	memset(dma_buf->area, 0, runtime->hw.buffer_bytes_max);
 
 	if (substream->stream == SNDRV_PCM_STREAM_PLAYBACK) {
-		for (i = 0; i < VOIP_MAX_Q_LEN; i++) {
+		for (i = 0; i < periods; i++) {
 			buf_node = (void *)dma_buf->area + offset;
 
 			list_add_tail(&buf_node->list,
@@ -1293,7 +1305,7 @@ static int msm_pcm_hw_params(struct snd_pcm_substream *substream,
 			offset = offset + sizeof(struct voip_buf_node);
 		}
 	} else {
-		for (i = 0; i < VOIP_MAX_Q_LEN; i++) {
+		for (i = 0; i < periods; i++) {
 			buf_node = (void *) dma_buf->area + offset;
 			list_add_tail(&buf_node->list,
 					&voip_info.free_out_queue);
@@ -1578,7 +1590,7 @@ static int voip_get_media_type(uint32_t mode, uint32_t rate_type,
 		ret = -EINVAL;
 	}
 
-	pr_debug("%s: media_type is 0x%x\n", __func__, *media_type);
+	pr_info("%s: media_type is 0x%x\n", __func__, *media_type);
 
 	return ret;
 }

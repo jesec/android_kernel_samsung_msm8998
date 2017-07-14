@@ -255,6 +255,8 @@ static int ksm_show_mem_notifier(struct notifier_block *nb,
 				unsigned long action,
 				void *data)
 {
+	if (action)
+		return 0;
 	pr_info("ksm_pages_sharing: %lu\n", ksm_pages_sharing);
 	pr_info("ksm_pages_shared: %lu\n", ksm_pages_shared);
 
@@ -558,8 +560,8 @@ static struct page *get_ksm_page(struct stable_node *stable_node, bool lock_it)
 	void *expected_mapping;
 	unsigned long kpfn;
 
-	expected_mapping = (void *)stable_node +
-				(PAGE_MAPPING_ANON | PAGE_MAPPING_KSM);
+	expected_mapping = (void *)((unsigned long)stable_node |
+					PAGE_MAPPING_KSM);
 again:
 	kpfn = READ_ONCE(stable_node->kpfn);
 	page = pfn_to_page(kpfn);

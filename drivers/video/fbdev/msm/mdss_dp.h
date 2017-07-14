@@ -1,4 +1,4 @@
-/* Copyright (c) 2012-2014, 2016 The Linux Foundation. All rights reserved.
+/* Copyright (c) 2012-2014, 2016-2017 The Linux Foundation. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -29,6 +29,20 @@
 #include "mdss.h"
 #include "mdss_panel.h"
 
+#ifdef CONFIG_SEC_DISPLAYPORT
+#include <linux/usb/manager/usb_typec_manager_notifier.h>
+/*#define SECDP_PHY_TEST*/				/* for RE TEST */
+/*#define SECDP_PHY_AUTO_TEST*/			/* for PHY AUTOMATION TEST */
+#define SECDP_LIMIT_REAUTH				/* limit max HDCP reauth */
+#define SECDP_MAX_REAUTH_COUNT	100
+#define SECDP_BLOCK_DFP_VGA				/* block VGA dongle support */
+#define SECDP_AUX_RETRY					/* aux retry */
+
+#define DPCD_BRANCH_HW_REVISION    0x509
+#define DPCD_BRANCH_SW_REVISION_MAJOR    0x50A
+#define DPCD_BRANCH_SW_REVISION_MINOR    0x50B
+#endif
+
 #define dp_read(offset) readl_relaxed((offset))
 #define dp_write(offset, data) writel_relaxed((data), (offset))
 
@@ -38,11 +52,6 @@
 
 #define EDP_PORT_MAX		1
 #define EDP_SINK_CAP_LEN	16
-
-#define EDP_AUX_ERR_NONE	0
-#define EDP_AUX_ERR_ADDR	-1
-#define EDP_AUX_ERR_TOUT	-2
-#define EDP_AUX_ERR_NACK	-3
 
 /* 4 bits of aux command */
 #define EDP_CMD_AUX_WRITE	0x8
@@ -80,7 +89,7 @@
 #define EDP_INTR_I2C_NACK	BIT(18)
 #define EDP_INTR_I2C_DEFER	BIT(21)
 #define EDP_INTR_PLL_UNLOCKED	BIT(24)
-#define EDP_INTR_AUX_ERROR	BIT(27)
+#define EDP_INTR_PHY_AUX_ERR	BIT(27)
 
 
 #define EDP_INTR_STATUS1 \
@@ -88,7 +97,7 @@
 	EDP_INTR_WRONG_ADDR | EDP_INTR_TIMEOUT | \
 	EDP_INTR_NACK_DEFER | EDP_INTR_WRONG_DATA_CNT | \
 	EDP_INTR_I2C_NACK | EDP_INTR_I2C_DEFER | \
-	EDP_INTR_PLL_UNLOCKED | EDP_INTR_AUX_ERROR)
+	EDP_INTR_PLL_UNLOCKED | EDP_INTR_PHY_AUX_ERR)
 
 #define EDP_INTR_MASK1		(EDP_INTR_STATUS1 << 2)
 
@@ -141,6 +150,7 @@ enum dp_pm_type {
 #define DP_VDM_STATUS		0x10
 #define DP_VDM_CONFIGURE	0x11
 
+#ifndef CONFIG_SEC_DISPLAYPORT
 enum dp_port_cap {
 	PORT_NONE = 0,
 	PORT_UFP_D,
@@ -183,6 +193,7 @@ struct dp_alt_mode {
 	u32 usbpd_dp_config;
 	enum dp_alt_mode_state current_state;
 };
+#endif
 
 #define DPCD_ENHANCED_FRAME	BIT(0)
 #define DPCD_TPS3	BIT(1)
@@ -207,14 +218,18 @@ struct dp_alt_mode {
 #define EV_USBPD_EXIT_MODE		BIT(12)
 #define EV_USBPD_ATTENTION		BIT(13)
 
+#ifdef CONFIG_SEC_DISPLAYPORT
+#define EV_DP_OFF_HPD			BIT(14)
+#endif
+
 /* dp state ctrl */
-#define ST_TRAIN_PATTERN_1		BIT(0)
+#define ST_TRAIN_PATTERN_1		BIT(0)		/* D10.2 without scrambling */
 #define ST_TRAIN_PATTERN_2		BIT(1)
 #define ST_TRAIN_PATTERN_3		BIT(2)
-#define ST_TRAIN_PATTERN_4		BIT(3)
+#define ST_TRAIN_PATTERN_4		BIT(3)		/* HBR2 Compliance EYE pattern */
 #define ST_SYMBOL_ERR_RATE_MEASUREMENT	BIT(4)
 #define ST_PRBS7			BIT(5)
-#define ST_CUSTOM_80_BIT_PATTERN	BIT(6)
+#define ST_CUSTOM_80_BIT_PATTERN	BIT(6)	/* 80 bit custom pattern transmitted */
 #define ST_SEND_VIDEO			BIT(7)
 #define ST_PUSH_IDLE			BIT(8)
 
@@ -228,6 +243,7 @@ struct dp_alt_mode {
 #define DP_LINK_RATE_MAX	DP_LINK_RATE_540
 
 #define DP_LINK_RATE_MULTIPLIER	27000000
+#define DP_KHZ_TO_HZ            1000
 #define DP_MAX_PIXEL_CLK_KHZ	675000
 struct downstream_port_config {
 	/* Byte 02205h */
@@ -240,6 +256,16 @@ struct downstream_port_config {
 	bool msa_timing_par_ignored;
 	bool oui_support;
 };
+
+#ifdef SECDP_PHY_TEST
+struct secdp_phy_param_st {
+	char v_level;		/* amplitude 0,1,2,3 */
+	char p_level;		/* pre-emphasis 0,1,2,3 */
+	char link_rate;		/* 6,10,20 */
+	char lane_cnt;		/* 4, fixed */
+	int pattern;		/* 0,1,2,..,7 */
+};
+#endif
 
 struct dpcd_cap {
 	char major;
@@ -272,6 +298,33 @@ struct dpcd_test_request {
 	u32 test_requested;
 	u32 test_link_rate;
 	u32 test_lane_count;
+	u32 phy_test_pattern_sel;
+	u32 test_video_pattern;
+	u32 test_bit_depth;
+	u32 test_dyn_range;
+	u32 test_h_total;
+	u32 test_v_total;
+	u32 test_h_start;
+	u32 test_v_start;
+	u32 test_hsync_pol;
+	u32 test_hsync_width;
+	u32 test_vsync_pol;
+	u32 test_vsync_width;
+	u32 test_h_width;
+	u32 test_v_height;
+	u32 test_rr_d;
+	u32 test_rr_n;
+	u32 test_audio_sampling_rate;
+	u32 test_audio_channel_count;
+	u32 test_audio_pattern_type;
+	u32 test_audio_period_ch_1;
+	u32 test_audio_period_ch_2;
+	u32 test_audio_period_ch_3;
+	u32 test_audio_period_ch_4;
+	u32 test_audio_period_ch_5;
+	u32 test_audio_period_ch_6;
+	u32 test_audio_period_ch_7;
+	u32 test_audio_period_ch_8;
 	u32 response;
 };
 
@@ -379,6 +432,28 @@ struct dp_hdcp {
 	bool feature_enabled;
 };
 
+struct mdss_dp_event {
+	struct mdss_dp_drv_pdata *dp;
+	u32 id;
+};
+
+#define MDSS_DP_EVENT_Q_MAX 4
+
+struct mdss_dp_event_data {
+	wait_queue_head_t event_q;
+	u32 pndx;
+	u32 gndx;
+	struct mdss_dp_event event_list[MDSS_DP_EVENT_Q_MAX];
+	spinlock_t event_lock;
+};
+
+struct mdss_dp_crc_data {
+	bool en;
+	u32 r_cr;
+	u32 g_y;
+	u32 b_cb;
+};
+
 struct mdss_dp_drv_pdata {
 	/* device driver */
 	int (*on) (struct mdss_panel_data *pdata);
@@ -386,10 +461,33 @@ struct mdss_dp_drv_pdata {
 	struct platform_device *pdev;
 	struct platform_device *ext_pdev;
 
+#ifndef CONFIG_SEC_DISPLAYPORT
 	struct usbpd *pd;
+	enum plug_orientation orientation;
 	struct dp_hdcp hdcp;
 	struct usbpd_svid_handler svid_handler;
 	struct dp_alt_mode alt_mode;
+#else
+	enum plug_orientation orientation;
+	struct notifier_block dp_typec_nb;
+	struct delayed_work dp_noti_register;
+	bool notifier_registered;
+	struct dp_hdcp hdcp;
+	int dex_reconnecting;
+	int aux_status;
+	int link_train_status;
+	bool is_dex_supported;
+#ifdef SECDP_LIMIT_REAUTH
+	int reauth_count;
+#endif
+#ifdef SECDP_AUX_RETRY
+	int aux_tuning_value[4];
+	int aux_tuning_index;
+#endif
+#endif
+#ifdef SECDP_PHY_TEST
+	struct secdp_phy_param_st *secdp_phy_param;
+#endif
 	bool dp_initialized;
 	struct msm_ext_disp_init_data ext_audio_data;
 
@@ -401,6 +499,10 @@ struct mdss_dp_drv_pdata {
 	bool core_clks_on;
 	bool link_clks_on;
 	bool power_on;
+	bool sink_info_read;
+	bool hpd;
+	bool psm_enabled;
+	bool audio_test_req;
 
 	/* dp specific */
 	unsigned char *base;
@@ -412,8 +514,11 @@ struct mdss_dp_drv_pdata {
 	struct dss_io_data hdcp_io;
 	int base_size;
 	unsigned char *mmss_cc_base;
+	bool override_config;
 	u32 mask1;
 	u32 mask2;
+	struct mdss_dp_crc_data ctl_crc;
+	struct mdss_dp_crc_data sink_crc;
 
 	struct mdss_panel_data panel_data;
 	struct mdss_util_intf *mdss_util;
@@ -437,6 +542,7 @@ struct mdss_dp_drv_pdata {
 	struct dss_module_power power_data[DP_MAX_PM];
 	struct dp_pinctrl_res pin_res;
 	int aux_sel_gpio;
+	int aux_sel_gpio_output;
 	int aux_en_gpio;
 	int usbplug_cc_gpio;
 	int hpd_gpio;
@@ -449,16 +555,29 @@ struct mdss_dp_drv_pdata {
 
 	/* aux */
 	struct completion aux_comp;
-	struct completion train_comp;
 	struct completion idle_comp;
 	struct completion video_comp;
 	struct completion irq_comp;
+#ifdef CONFIG_SEC_DISPLAYPORT
+	struct completion dp_off_comp;
+#endif
 	struct mutex aux_mutex;
 	struct mutex train_mutex;
 	struct mutex pd_msg_mutex;
 	struct mutex attention_lock;
 	struct mutex hdcp_mutex;
-	bool cable_connected;
+	bool cable_connected;			/* hpd, see "dp_get_cable_status()" */
+#ifdef CONFIG_SEC_DISPLAYPORT
+	bool cable_connected_phy;		/* real cable connect/disconnect */
+	int dex_now;			/* 1 if dex is running, 0 otherwise */
+	int dex_en;				/* 1 if dex starts, 0 otherwise */
+	int dex_set;			/* 1 if "hdmi mode" is dex, 0 otherwise */
+	char dex_fw_ver[10];	/* 0: h/w, 1: s/w major, 2: s/w minor */
+	int dp_pin_type;
+	bool sec_link_conf;
+	bool sec_hpd;
+	CC_NOTI_TYPEDEF sec_hpd_noti;
+#endif
 	u32 s3d_mode;
 	u32 aux_cmd_busy;
 	u32 aux_cmd_i2c;
@@ -476,25 +595,26 @@ struct mdss_dp_drv_pdata {
 	char tu_desired;
 	char valid_boundary;
 	char delay_start;
-	u32 bpp;
 	struct dp_statistic dp_stat;
 	bool hpd_irq_on;
-	bool hpd_irq_toggled;
-	bool hpd_irq_clients_notified;
+	u32 hpd_notification_status;
 
-	/* event */
+	struct mdss_dp_event_data dp_event;
+	struct task_struct *ev_thread;
+
 	struct workqueue_struct *workq;
-	struct work_struct work;
 	struct delayed_work hdcp_cb_work;
-	u32 current_event;
-	spinlock_t event_lock;
+#ifdef CONFIG_SEC_DISPLAYPORT
+	struct delayed_work dp_start_hdcp_work;
+	struct delayed_work dp_reconnection_work;
+#endif
 	spinlock_t lock;
-	struct hdmi_util_ds_data ds_data;
 	struct switch_dev sdev;
 	struct kobject *kobj;
 	u32 max_pclk_khz;
 	u32 vic;
 	u32 new_vic;
+	u16 dpcd_version;
 	int fb_node;
 	int hdcp_status;
 
@@ -510,33 +630,196 @@ enum dp_lane_count {
 	DP_LANE_COUNT_4	= 4,
 };
 
+enum audio_pattern_type {
+	AUDIO_TEST_PATTERN_OPERATOR_DEFINED	= 0x00,
+	AUDIO_TEST_PATTERN_SAWTOOTH		= 0x01,
+};
+
+static inline char *mdss_dp_get_audio_test_pattern(u32 pattern)
+{
+	switch (pattern) {
+	case AUDIO_TEST_PATTERN_OPERATOR_DEFINED:
+		return DP_ENUM_STR(AUDIO_TEST_PATTERN_OPERATOR_DEFINED);
+	case AUDIO_TEST_PATTERN_SAWTOOTH:
+		return DP_ENUM_STR(AUDIO_TEST_PATTERN_SAWTOOTH);
+	default:
+		return "unknown";
+	}
+}
+
+enum audio_sample_rate {
+	AUDIO_SAMPLE_RATE_32_KHZ	= 0x00,
+	AUDIO_SAMPLE_RATE_44_1_KHZ	= 0x01,
+	AUDIO_SAMPLE_RATE_48_KHZ	= 0x02,
+	AUDIO_SAMPLE_RATE_88_2_KHZ	= 0x03,
+	AUDIO_SAMPLE_RATE_96_KHZ	= 0x04,
+	AUDIO_SAMPLE_RATE_176_4_KHZ	= 0x05,
+	AUDIO_SAMPLE_RATE_192_KHZ	= 0x06,
+};
+
+static inline char *mdss_dp_get_audio_sample_rate(u32 rate)
+{
+	switch (rate) {
+	case AUDIO_SAMPLE_RATE_32_KHZ:
+		return DP_ENUM_STR(AUDIO_SAMPLE_RATE_32_KHZ);
+	case AUDIO_SAMPLE_RATE_44_1_KHZ:
+		return DP_ENUM_STR(AUDIO_SAMPLE_RATE_44_1_KHZ);
+	case AUDIO_SAMPLE_RATE_48_KHZ:
+		return DP_ENUM_STR(AUDIO_SAMPLE_RATE_48_KHZ);
+	case AUDIO_SAMPLE_RATE_88_2_KHZ:
+		return DP_ENUM_STR(AUDIO_SAMPLE_RATE_88_2_KHZ);
+	case AUDIO_SAMPLE_RATE_96_KHZ:
+		return DP_ENUM_STR(AUDIO_SAMPLE_RATE_96_KHZ);
+	case AUDIO_SAMPLE_RATE_176_4_KHZ:
+		return DP_ENUM_STR(AUDIO_SAMPLE_RATE_176_4_KHZ);
+	case AUDIO_SAMPLE_RATE_192_KHZ:
+		return DP_ENUM_STR(AUDIO_SAMPLE_RATE_192_KHZ);
+	default:
+		return "unknown";
+	}
+}
+
+enum phy_test_pattern {
+	PHY_TEST_PATTERN_NONE,
+	PHY_TEST_PATTERN_D10_2_NO_SCRAMBLING,
+	PHY_TEST_PATTERN_SYMBOL_ERR_MEASUREMENT_CNT,
+	PHY_TEST_PATTERN_PRBS7,
+	PHY_TEST_PATTERN_80_BIT_CUSTOM_PATTERN,
+	PHY_TEST_PATTERN_HBR2_CTS_EYE_PATTERN,
+};
+
+static inline char *mdss_dp_get_phy_test_pattern(u32 phy_test_pattern_sel)
+{
+	switch (phy_test_pattern_sel) {
+	case PHY_TEST_PATTERN_NONE:
+		return DP_ENUM_STR(PHY_TEST_PATTERN_NONE);
+	case PHY_TEST_PATTERN_D10_2_NO_SCRAMBLING:
+		return DP_ENUM_STR(PHY_TEST_PATTERN_D10_2_NO_SCRAMBLING);
+	case PHY_TEST_PATTERN_SYMBOL_ERR_MEASUREMENT_CNT:
+		return DP_ENUM_STR(PHY_TEST_PATTERN_SYMBOL_ERR_MEASUREMENT_CNT);
+	case PHY_TEST_PATTERN_PRBS7:
+		return DP_ENUM_STR(PHY_TEST_PATTERN_PRBS7);
+	case PHY_TEST_PATTERN_80_BIT_CUSTOM_PATTERN:
+		return DP_ENUM_STR(PHY_TEST_PATTERN_80_BIT_CUSTOM_PATTERN);
+	case PHY_TEST_PATTERN_HBR2_CTS_EYE_PATTERN:
+		return DP_ENUM_STR(PHY_TEST_PATTERN_HBR2_CTS_EYE_PATTERN);
+	default:
+		return "unknown";
+	}
+}
+
+#ifdef CONFIG_SEC_DISPLAYPORT
+enum dp_dfp_type {
+	DFP_TYPE_DP     = 0,
+	DFP_TYPE_VGA    = 1,
+	DFP_TYPE_HDMI   = 2,		/* DVI, HDMI, DP++ */
+	DFP_TYPE_OTHERS = 3,
+};
+
+static inline char *secdp_get_dfp_type_name(u32 type)
+{
+	switch (type) {
+	case DFP_TYPE_DP:
+		return DP_ENUM_STR(DFP_TYPE_DP);
+	case DFP_TYPE_VGA:
+		return DP_ENUM_STR(DFP_TYPE_VGA);
+	case DFP_TYPE_HDMI:
+		return DP_ENUM_STR(DFP_TYPE_HDMI);
+	case DFP_TYPE_OTHERS:
+		return DP_ENUM_STR(DFP_TYPE_OTHERS);
+	default:
+		return "unknown";
+	}
+}
+
+#define SAMSUNG_VENDOR_ID		0x04E8
+#define DEXDOCK_PRODUCT_ID		0xA020
+#endif
+
+static inline bool mdss_dp_is_phy_test_pattern_supported(
+		u32 phy_test_pattern_sel)
+{
+	switch (phy_test_pattern_sel) {
+	case PHY_TEST_PATTERN_NONE:
+	case PHY_TEST_PATTERN_D10_2_NO_SCRAMBLING:
+	case PHY_TEST_PATTERN_SYMBOL_ERR_MEASUREMENT_CNT:
+	case PHY_TEST_PATTERN_PRBS7:
+	case PHY_TEST_PATTERN_80_BIT_CUSTOM_PATTERN:
+	case PHY_TEST_PATTERN_HBR2_CTS_EYE_PATTERN:
+		return true;
+	default:
+		return false;
+	}
+}
+
+enum dp_aux_error {
+	EDP_AUX_ERR_NONE	= 0,
+	EDP_AUX_ERR_ADDR	= -1,
+	EDP_AUX_ERR_TOUT	= -2,
+	EDP_AUX_ERR_NACK	= -3,
+	EDP_AUX_ERR_DEFER	= -4,
+	EDP_AUX_ERR_NACK_DEFER	= -5,
+	EDP_AUX_ERR_PHY		= -6,
+};
+
+static inline char *mdss_dp_get_aux_error(u32 aux_error)
+{
+	switch (aux_error) {
+	case EDP_AUX_ERR_NONE:
+		return DP_ENUM_STR(EDP_AUX_ERR_NONE);
+	case EDP_AUX_ERR_ADDR:
+		return DP_ENUM_STR(EDP_AUX_ERR_ADDR);
+	case EDP_AUX_ERR_TOUT:
+		return DP_ENUM_STR(EDP_AUX_ERR_TOUT);
+	case EDP_AUX_ERR_NACK:
+		return DP_ENUM_STR(EDP_AUX_ERR_NACK);
+	case EDP_AUX_ERR_DEFER:
+		return DP_ENUM_STR(EDP_AUX_ERR_DEFER);
+	case EDP_AUX_ERR_NACK_DEFER:
+		return DP_ENUM_STR(EDP_AUX_ERR_NACK_DEFER);
+	default:
+		return "unknown";
+	}
+}
+
 enum test_response {
-	TEST_NACK	= 0x0,
-	TEST_ACK	= 0x1,
+	TEST_ACK			= 0x1,
+	TEST_NACK			= 0x2,
+	TEST_EDID_CHECKSUM_WRITE	= 0x4,
 };
 
 static inline char *mdss_dp_get_test_response(u32 test_response)
 {
 	switch (test_response) {
-	case TEST_NACK:		return DP_ENUM_STR(TEST_NACK);
-	case TEST_ACK:		return DP_ENUM_STR(TEST_ACK);
-	default:		return "unknown";
+	case TEST_NACK:
+		return DP_ENUM_STR(TEST_NACK);
+	case TEST_ACK:
+		return DP_ENUM_STR(TEST_ACK);
+	case TEST_EDID_CHECKSUM_WRITE:
+		return DP_ENUM_STR(TEST_EDID_CHECKSUM_WRITE);
+	default:
+		return "unknown";
 	}
 }
 
 enum test_type {
 	UNKNOWN_TEST		= 0,
-	TEST_LINK_TRAINING	= BIT(0),
-	TEST_PATTERN		= BIT(1),
-	TEST_EDID_READ		= BIT(2),
+	TEST_LINK_TRAINING	= 0x1,
+	TEST_VIDEO_PATTERN	= 0x2,
+	PHY_TEST_PATTERN	= 0x8,
+	TEST_EDID_READ		= 0x4,
+	TEST_AUDIO_PATTERN		= 32,
+	TEST_AUDIO_DISABLED_VIDEO	= 64,
 };
 
 static inline char *mdss_dp_get_test_name(u32 test_requested)
 {
 	switch (test_requested) {
 	case TEST_LINK_TRAINING:	return DP_ENUM_STR(TEST_LINK_TRAINING);
-	case TEST_PATTERN:		return DP_ENUM_STR(TEST_PATTERN);
+	case TEST_VIDEO_PATTERN:	return DP_ENUM_STR(TEST_VIDEO_PATTERN);
+	case PHY_TEST_PATTERN:		return DP_ENUM_STR(PHY_TEST_PATTERN);
 	case TEST_EDID_READ:		return DP_ENUM_STR(TEST_EDID_READ);
+	case TEST_AUDIO_PATTERN:	return DP_ENUM_STR(TEST_AUDIO_PATTERN);
 	default:			return "unknown";
 	}
 }
@@ -579,9 +862,250 @@ static inline char *mdss_dp_ev_event_to_string(int event)
 		return DP_ENUM_STR(EV_IDLE_PATTERNS_SENT);
 	case EV_VIDEO_READY:
 		return DP_ENUM_STR(EV_VIDEO_READY);
+	case EV_USBPD_DISCOVER_MODES:
+		return DP_ENUM_STR(EV_USBPD_DISCOVER_MODES);
+	case EV_USBPD_ENTER_MODE:
+		return DP_ENUM_STR(EV_USBPD_ENTER_MODE);
+	case EV_USBPD_DP_STATUS:
+		return DP_ENUM_STR(EV_USBPD_DP_STATUS);
+	case EV_USBPD_DP_CONFIGURE:
+		return DP_ENUM_STR(EV_USBPD_DP_CONFIGURE);
+	case EV_USBPD_CC_PIN_POLARITY:
+		return DP_ENUM_STR(EV_USBPD_CC_PIN_POLARITY);
+	case EV_USBPD_EXIT_MODE:
+		return DP_ENUM_STR(EV_USBPD_EXIT_MODE);
+	case EV_USBPD_ATTENTION:
+		return DP_ENUM_STR(EV_USBPD_ATTENTION);
 	default:
 		return "unknown";
 	}
+}
+
+enum dynamic_range {
+	DP_DYNAMIC_RANGE_RGB_VESA = 0x00,
+	DP_DYNAMIC_RANGE_RGB_CEA = 0x01,
+	DP_DYNAMIC_RANGE_UNKNOWN = 0xFFFFFFFF,
+};
+
+static inline char *mdss_dp_dynamic_range_to_string(u32 dr)
+{
+	switch (dr) {
+	case DP_DYNAMIC_RANGE_RGB_VESA:
+		return DP_ENUM_STR(DP_DYNAMIC_RANGE_RGB_VESA);
+	case DP_DYNAMIC_RANGE_RGB_CEA:
+		return DP_ENUM_STR(DP_DYNAMIC_RANGE_RGB_CEA);
+	case DP_DYNAMIC_RANGE_UNKNOWN:
+	default:
+		return "unknown";
+	}
+}
+
+/**
+ * mdss_dp_is_dynamic_range_valid() - validates the dynamic range
+ * @bit_depth: the dynamic range value to be checked
+ *
+ * Returns true if the dynamic range value is supported.
+ */
+static inline bool mdss_dp_is_dynamic_range_valid(u32 dr)
+{
+	switch (dr) {
+	case DP_DYNAMIC_RANGE_RGB_VESA:
+	case DP_DYNAMIC_RANGE_RGB_CEA:
+		return true;
+	default:
+		return false;
+	}
+}
+
+enum test_bit_depth {
+	DP_TEST_BIT_DEPTH_6 = 0x00,
+	DP_TEST_BIT_DEPTH_8 = 0x01,
+	DP_TEST_BIT_DEPTH_10 = 0x02,
+	DP_TEST_BIT_DEPTH_UNKNOWN = 0xFFFFFFFF,
+};
+
+static inline char *mdss_dp_test_bit_depth_to_string(u32 tbd)
+{
+	switch (tbd) {
+	case DP_TEST_BIT_DEPTH_6:
+		return DP_ENUM_STR(DP_TEST_BIT_DEPTH_6);
+	case DP_TEST_BIT_DEPTH_8:
+		return DP_ENUM_STR(DP_TEST_BIT_DEPTH_8);
+	case DP_TEST_BIT_DEPTH_10:
+		return DP_ENUM_STR(DP_TEST_BIT_DEPTH_10);
+	case DP_TEST_BIT_DEPTH_UNKNOWN:
+	default:
+		return "unknown";
+	}
+}
+
+/**
+ * mdss_dp_is_test_bit_depth_valid() - validates the bit depth requested
+ * @bit_depth: bit depth requested by the sink
+ *
+ * Returns true if the requested bit depth is supported.
+ */
+static inline bool mdss_dp_is_test_bit_depth_valid(u32 tbd)
+{
+	/* DP_TEST_VIDEO_PATTERN_NONE is treated as invalid */
+	switch (tbd) {
+	case DP_TEST_BIT_DEPTH_6:
+	case DP_TEST_BIT_DEPTH_8:
+	case DP_TEST_BIT_DEPTH_10:
+		return true;
+	default:
+		return false;
+	}
+}
+
+/**
+ * mdss_dp_test_bit_depth_to_bpp() - convert test bit depth to bpp
+ * @tbd: test bit depth
+ *
+ * Returns the bits per pixel (bpp) to be used corresponding to the
+ * git bit depth value. This function assumes that bit depth has
+ * already been validated.
+ */
+static inline u32 mdss_dp_test_bit_depth_to_bpp(enum test_bit_depth tbd)
+{
+	u32 bpp;
+
+	/*
+	 * Few simplistic rules and assumptions made here:
+	 *    1. Bit depth is per color component
+	 *    2. If bit depth is unknown return 0
+	 *    3. Assume 3 color components
+	 */
+	switch (tbd) {
+	case DP_TEST_BIT_DEPTH_6:
+		bpp = 18;
+		break;
+	case DP_TEST_BIT_DEPTH_8:
+		bpp = 24;
+		break;
+	case DP_TEST_BIT_DEPTH_10:
+		bpp = 30;
+		break;
+	case DP_TEST_BIT_DEPTH_UNKNOWN:
+	default:
+		bpp = 0;
+	}
+
+	return bpp;
+}
+
+/**
+ * mdss_dp_bpp_to_test_bit_depth() - convert bpp to test bit depth
+ * &bpp: the bpp to be converted
+ *
+ * Return the bit depth per color component to used with the video
+ * test pattern data based on the bits per pixel value.
+ */
+static inline u32 mdss_dp_bpp_to_test_bit_depth(u32 bpp)
+{
+	enum test_bit_depth tbd;
+
+	/*
+	 * Few simplistic rules and assumptions made here:
+	 *    1. Test bit depth is bit depth per color component
+	 *    2. Assume 3 color components
+	 */
+	switch (bpp) {
+	case 18:
+		tbd = DP_TEST_BIT_DEPTH_6;
+		break;
+	case 24:
+		tbd = DP_TEST_BIT_DEPTH_8;
+		break;
+	case 30:
+		tbd = DP_TEST_BIT_DEPTH_10;
+		break;
+	default:
+		tbd = DP_TEST_BIT_DEPTH_UNKNOWN;
+		break;
+	}
+
+	return tbd;
+}
+
+enum test_video_pattern {
+	DP_TEST_VIDEO_PATTERN_NONE = 0x00,
+	DP_TEST_VIDEO_PATTERN_COLOR_RAMPS = 0x01,
+	DP_TEST_VIDEO_PATTERN_BW_VERT_LINES = 0x02,
+	DP_TEST_VIDEO_PATTERN_COLOR_SQUARE = 0x03,
+};
+
+static inline char *mdss_dp_test_video_pattern_to_string(u32 test_video_pattern)
+{
+	switch (test_video_pattern) {
+	case DP_TEST_VIDEO_PATTERN_NONE:
+		return DP_ENUM_STR(DP_TEST_VIDEO_PATTERN_NONE);
+	case DP_TEST_VIDEO_PATTERN_COLOR_RAMPS:
+		return DP_ENUM_STR(DP_TEST_VIDEO_PATTERN_COLOR_RAMPS);
+	case DP_TEST_VIDEO_PATTERN_BW_VERT_LINES:
+		return DP_ENUM_STR(DP_TEST_VIDEO_PATTERN_BW_VERT_LINES);
+	case DP_TEST_VIDEO_PATTERN_COLOR_SQUARE:
+		return DP_ENUM_STR(DP_TEST_VIDEO_PATTERN_COLOR_SQUARE);
+	default:
+		return "unknown";
+	}
+}
+
+/**
+ * mdss_dp_is_test_video_pattern_valid() - validates the video pattern
+ * @pattern: video pattern requested by the sink
+ *
+ * Returns true if the requested video pattern is supported.
+ */
+static inline bool mdss_dp_is_test_video_pattern_valid(u32 pattern)
+{
+	switch (pattern) {
+	case DP_TEST_VIDEO_PATTERN_NONE:
+	case DP_TEST_VIDEO_PATTERN_COLOR_RAMPS:
+	case DP_TEST_VIDEO_PATTERN_BW_VERT_LINES:
+	case DP_TEST_VIDEO_PATTERN_COLOR_SQUARE:
+		return true;
+	default:
+		return false;
+	}
+}
+
+enum notification_status {
+	NOTIFY_UNKNOWN,
+	NOTIFY_CONNECT,
+	NOTIFY_DISCONNECT,
+	NOTIFY_CONNECT_IRQ_HPD,
+	NOTIFY_DISCONNECT_IRQ_HPD,
+};
+
+static inline char const *mdss_dp_notification_status_to_string(
+	enum notification_status status)
+{
+	switch (status) {
+	case NOTIFY_UNKNOWN:
+		return DP_ENUM_STR(NOTIFY_UNKNOWN);
+	case NOTIFY_CONNECT:
+		return DP_ENUM_STR(NOTIFY_CONNECT);
+	case NOTIFY_DISCONNECT:
+		return DP_ENUM_STR(NOTIFY_DISCONNECT);
+	case NOTIFY_CONNECT_IRQ_HPD:
+		return DP_ENUM_STR(NOTIFY_CONNECT_IRQ_HPD);
+	case NOTIFY_DISCONNECT_IRQ_HPD:
+		return DP_ENUM_STR(NOTIFY_DISCONNECT_IRQ_HPD);
+	default:
+		return "unknown";
+	}
+}
+
+static inline void mdss_dp_reset_frame_crc_data(struct mdss_dp_crc_data *crc)
+{
+	if (!crc)
+		return;
+
+	crc->r_cr = 0;
+	crc->g_y = 0;
+	crc->b_cb = 0;
+	crc->en = false;
 }
 
 void mdss_dp_phy_initialize(struct mdss_dp_drv_pdata *dp);
@@ -599,12 +1123,25 @@ void mdss_dp_fill_link_cfg(struct mdss_dp_drv_pdata *ep);
 void mdss_dp_sink_power_down(struct mdss_dp_drv_pdata *ep);
 void mdss_dp_lane_power_ctrl(struct mdss_dp_drv_pdata *ep, int up);
 void mdss_dp_config_ctrl(struct mdss_dp_drv_pdata *ep);
-char mdss_dp_gen_link_clk(struct mdss_panel_info *pinfo, char lane_cnt);
+char mdss_dp_gen_link_clk(struct mdss_dp_drv_pdata *dp);
 int mdss_dp_aux_set_sink_power_state(struct mdss_dp_drv_pdata *ep, char state);
+int mdss_dp_aux_send_psm_request(struct mdss_dp_drv_pdata *dp, bool enable);
 void mdss_dp_aux_send_test_response(struct mdss_dp_drv_pdata *ep);
 void *mdss_dp_get_hdcp_data(struct device *dev);
 int mdss_dp_hdcp2p2_init(struct mdss_dp_drv_pdata *dp_drv);
 bool mdss_dp_aux_clock_recovery_done(struct mdss_dp_drv_pdata *ep);
 bool mdss_dp_aux_channel_eq_done(struct mdss_dp_drv_pdata *ep);
+bool mdss_dp_aux_is_link_rate_valid(u32 link_rate);
+bool mdss_dp_aux_is_lane_count_valid(u32 lane_count);
+int mdss_dp_aux_link_status_read(struct mdss_dp_drv_pdata *ep, int len);
+void mdss_dp_aux_update_voltage_and_pre_emphasis_lvl(
+		struct mdss_dp_drv_pdata *dp);
+int mdss_dp_aux_read_sink_frame_crc(struct mdss_dp_drv_pdata *dp);
+int mdss_dp_aux_config_sink_frame_crc(struct mdss_dp_drv_pdata *dp,
+	bool enable);
+int mdss_dp_aux_parse_vx_px(struct mdss_dp_drv_pdata *ep);
+#ifdef CONFIG_SEC_DISPLAYPORT
+int secdp_check_aux_status(struct mdss_dp_drv_pdata *dp);
+#endif
 
 #endif /* MDSS_DP_H */

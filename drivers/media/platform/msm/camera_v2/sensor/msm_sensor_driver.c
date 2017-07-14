@@ -24,6 +24,19 @@
 
 #define SENSOR_MAX_MOUNTANGLE (360)
 
+#if defined (CONFIG_CAMERA_SYSFS_V2)
+extern char rear_cam_info[100];		//camera_info
+extern char front_cam_info[100];	//camera_info
+#if defined(CONFIG_SAMSUNG_MULTI_CAMERA)
+extern char rear2_cam_info[100];	//camera_info
+#endif
+#if defined(CONFIG_SAMSUNG_SECURE_CAMERA)
+extern char iris_cam_info[100];	//camera_info
+#endif
+#endif
+
+struct mutex sensor_pwr_lock;
+
 static struct v4l2_file_operations msm_sensor_v4l2_subdev_fops;
 static int32_t msm_sensor_driver_platform_probe(struct platform_device *pdev);
 
@@ -381,13 +394,13 @@ static int32_t msm_sensor_fill_slave_info_init_params(
 	if (!slave_info ||  !sensor_info)
 		return -EINVAL;
 
-	if (!slave_info->is_init_params_valid)
-		return 0;
-
 	sensor_init_params = &slave_info->sensor_init_params;
-	if (INVALID_CAMERA_B != sensor_init_params->position)
+	if (INVALID_CAMERA_B != sensor_init_params->position) {
 		sensor_info->position =
 			sensor_init_params->position;
+		CDBG("position : from(%d) -> to(%d)\n",
+			sensor_init_params->position, sensor_info->position);
+	}
 
 	if (SENSOR_MAX_MOUNTANGLE > sensor_init_params->sensor_mount_angle) {
 		sensor_info->sensor_mount_angle =
@@ -640,6 +653,13 @@ static int32_t msm_sensor_get_power_settings(void *setting,
 		pr_err("failed");
 		return -EINVAL;
 	}
+
+	power_info->num_shared_gpios = slave_info->num_shared_gpios;
+	if (slave_info->num_shared_gpios > 0) {
+		memcpy(power_info->shared_gpios, slave_info->shared_gpios,
+		    sizeof(slave_info->shared_gpios));
+	}
+	power_info->sensor_name = slave_info->sensor_name;
 	return rc;
 }
 
@@ -756,6 +776,12 @@ int32_t msm_sensor_driver_probe(void *setting,
 				power_setting_array.power_down_setting);
 		slave_info->is_init_params_valid =
 			slave_info32->is_init_params_valid;
+		slave_info->num_shared_gpios =
+			slave_info32->num_shared_gpios;
+		if (slave_info32->num_shared_gpios > 0) {
+			memcpy(slave_info->shared_gpios, slave_info32->shared_gpios,
+			    sizeof(slave_info32->shared_gpios));
+		}
 		slave_info->sensor_init_params =
 			slave_info32->sensor_init_params;
 		slave_info->output_format =
@@ -961,6 +987,14 @@ CSID_TG:
 	s_ctrl->is_probe_succeed = 1;
 
 	/*
+	 * Update the subdevice id of flash-src based on availability in kernel.
+	 */
+	if (strlen(slave_info->flash_name) == 0) {
+		s_ctrl->sensordata->sensor_info->
+			subdev_id[SUB_MODULE_LED_FLASH] = -1;
+	}
+
+	/*
 	 * Create /dev/videoX node, comment for now until dummy /dev/videoX
 	 * node is created and used by HAL
 	 */
@@ -996,6 +1030,11 @@ CSID_TG:
 		(s_ctrl->sensordata->sensor_info->position << 16) |
 		((s_ctrl->sensordata->
 		sensor_info->sensor_mount_angle / 90) << 8);
+
+	CDBG("Check position : %d cam is %s\n", slave_info->camera_id,
+		(mount_pos & (0x1 << 16)) ? "FRONT":"BACK");
+	CDBG("Check aux position : %d cam is %s\n", slave_info->camera_id,
+		(mount_pos & (0x1 << 24)) ? "AUX":"NONE");
 
 	s_ctrl->msm_sd.sd.entity.flags = mount_pos | MEDIA_ENT_FL_DEFAULT;
 
@@ -1133,6 +1172,41 @@ static int32_t msm_sensor_driver_get_dt_data(struct msm_sensor_ctrl_t *s_ctrl)
 	CDBG("%s qcom,mclk-23880000 = %d\n", __func__,
 		s_ctrl->set_mclk_23880000);
 
+#if defined (CONFIG_CAMERA_SYSFS_V2)
+	/* camera information */
+	if (cell_id == 0) {
+		rc = msm_camera_get_dt_camera_info(of_node, rear_cam_info);
+		if (rc < 0) {
+			pr_err("failed: msm_camera_get_dt_camera_info for rear rc %d", rc);
+			goto FREE_VREG_DATA;
+		}
+	}
+	else if (cell_id == 1){
+		rc = msm_camera_get_dt_camera_info(of_node, front_cam_info);
+		if (rc < 0) {
+			pr_err("failed: msm_camera_get_dt_camera_info for front rc %d", rc);
+			goto FREE_VREG_DATA;
+		}
+	}
+#if defined(CONFIG_SAMSUNG_MULTI_CAMERA)
+	else if (cell_id == 3) {
+		rc = msm_camera_get_dt_camera_info(of_node, rear2_cam_info);
+		if (rc < 0) {
+			pr_err("failed: msm_camera_get_dt_camera_info for rear2 rc %d", rc);
+			goto FREE_VREG_DATA;
+		}
+	}
+#endif
+#if defined(CONFIG_SAMSUNG_SECURE_CAMERA)
+	else if (cell_id == 4) {
+		rc = msm_camera_get_dt_camera_info(of_node, iris_cam_info);
+		if (rc < 0) {
+			pr_err("failed: msm_camera_get_dt_camera_info for iris rc %d", rc);
+			goto FREE_VREG_DATA;
+		}
+	}
+#endif
+#endif
 	return rc;
 
 FREE_VREG_DATA:
@@ -1334,6 +1408,7 @@ static const struct i2c_device_id i2c_id[] = {
 	{ }
 };
 
+#if 0
 static struct i2c_driver msm_sensor_driver_i2c = {
 	.id_table = i2c_id,
 	.probe  = msm_sensor_driver_i2c_probe,
@@ -1342,6 +1417,18 @@ static struct i2c_driver msm_sensor_driver_i2c = {
 		.name = SENSOR_DRIVER_I2C,
 	},
 };
+#else
+static struct i2c_driver msm_sensor_driver_i2c = {
+	.id_table = i2c_id,
+	.probe  = msm_sensor_driver_i2c_probe,
+	.remove = msm_sensor_driver_i2c_remove,
+	.driver = {
+		.name = "qcom,camera",
+		.owner = THIS_MODULE,
+		.of_match_table = msm_sensor_driver_dt_match,
+	},
+};
+#endif
 
 static int __init msm_sensor_driver_init(void)
 {
@@ -1356,6 +1443,8 @@ static int __init msm_sensor_driver_init(void)
 	if (rc)
 		pr_err("%s i2c_add_driver failed rc = %d",  __func__, rc);
 
+	mutex_init(&sensor_pwr_lock);
+
 	return rc;
 }
 
@@ -1364,6 +1453,9 @@ static void __exit msm_sensor_driver_exit(void)
 	CDBG("Enter");
 	platform_driver_unregister(&msm_sensor_platform_driver);
 	i2c_del_driver(&msm_sensor_driver_i2c);
+
+	mutex_destroy(&sensor_pwr_lock);
+
 	return;
 }
 

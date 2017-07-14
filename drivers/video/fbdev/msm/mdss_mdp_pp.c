@@ -1,4 +1,4 @@
-/* Copyright (c) 2012-2016, The Linux Foundation. All rights reserved.
+/* Copyright (c) 2012-2017, The Linux Foundation. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -84,6 +84,30 @@ struct mdp_csc_cfg mdp_csc_8bit_convert[MDSS_MDP_MAX_CSC] = {
 		{ 0x0, 0xff, 0x0, 0xff, 0x0, 0xff,},
 		{ 0x0, 0xff, 0x0, 0xff, 0x0, 0xff,},
 	},
+	[MDSS_MDP_CSC_YUV2RGB_P3L] = {
+		0,
+		{
+			0x0254, 0x0000, 0x03ae,						
+			0x0254, 0xff96, 0xfeee,
+			0x0254, 0x0456, 0x0000,
+		},
+		{ 0xfff0, 0xff80, 0xff80,},
+		{ 0x0, 0x0, 0x0,},
+		{ 0x10, 0xeb, 0x10, 0xf0, 0x10, 0xf0,},
+		{ 0x0, 0xff, 0x0, 0xff, 0x0, 0xff,},
+	},
+	[MDSS_MDP_CSC_YUV2RGB_P3FR] = {
+		0,
+		{
+			0x0200, 0x0000, 0x0329,
+			0x0200, 0xffa5, 0xff15,
+			0x0200, 0x03b9, 0x0000,
+		},
+		{ 0x0000, 0xff80, 0xff80,},
+		{ 0x0, 0x0, 0x0,},
+		{ 0x0, 0xff, 0x0, 0xff, 0x0, 0xff,},
+		{ 0x0, 0xff, 0x0, 0xff, 0x0, 0xff,},
+	},	
 	[MDSS_MDP_CSC_RGB2YUV_601L] = {
 		0,
 		{
@@ -222,9 +246,35 @@ struct mdp_csc_cfg mdp_csc_10bit_convert[MDSS_MDP_MAX_CSC] = {
 	[MDSS_MDP_CSC_YUV2RGB_2020FR] = {
 		0,
 		{
-			0x0200, 0x0000, 0x02f3,
+			0x0200, 0x0000, 0x02f3,			
 			0x0200, 0xffac, 0xfedb,
-			0x0200, 0x03c3, 0x0000,
+			0x0200, 0x03c3, 0x0000,		
+		},
+		
+		{ 0x0000, 0xfe00, 0xfe00,},
+		{ 0x0, 0x0, 0x0,},
+		{ 0x0, 0x3ff, 0x0, 0x3ff, 0x0, 0x3ff,},
+		{ 0x0, 0x3ff, 0x0, 0x3ff, 0x0, 0x3ff,},
+		
+	},
+	[MDSS_MDP_CSC_YUV2RGB_P3L] = {
+		0,
+		{
+			0x0254, 0x0000, 0x03ae,			
+			0x0254, 0xff96, 0xfeee,			
+			0x0254, 0x0456, 0x0000,			
+		},
+		{ 0xffc0, 0xfe00, 0xfe00,},
+		{ 0x0, 0x0, 0x0,},
+		{ 0x40, 0x3ac, 0x40, 0x3c0, 0x40, 0x3c0,},
+		{ 0x0, 0x3ff, 0x0, 0x3ff, 0x0, 0x3ff,},
+	},
+	[MDSS_MDP_CSC_YUV2RGB_P3FR] = {
+		0,
+		{
+			0x0200, 0x0000, 0x0329,
+			0x0200, 0xffa5, 0xff15,
+			0x0200, 0x03b9, 0x0000,
 		},
 		{ 0x0000, 0xfe00, 0xfe00,},
 		{ 0x0, 0x0, 0x0,},
@@ -1654,10 +1704,6 @@ int mdss_mdp_scaler_lut_cfg(struct mdp_scale_data_v2 *scaler,
 		}
 	}
 
-	if (scaler->lut_flag & SCALER_LUT_SWAP)
-		writel_relaxed(BIT(0), MDSS_MDP_REG_SCALER_COEF_LUT_CTRL +
-				offset);
-
 	return 0;
 }
 
@@ -1794,6 +1840,10 @@ int mdss_mdp_qseed3_setup(struct mdp_scale_data_v2 *scaler,
 						__func__);
 				return -EINVAL;
 			}
+			if (scaler->lut_flag & SCALER_LUT_SWAP)
+				writel_relaxed(BIT(0),
+					MDSS_MDP_REG_SCALER_COEF_LUT_CTRL +
+					offset);
 		}
 
 		writel_relaxed(phase_init,
@@ -2461,7 +2511,7 @@ static int pp_dspp_setup(u32 disp_num, struct mdss_mdp_mixer *mixer)
 	}
 
 	if (flags & PP_FLAGS_DIRTY_DITHER) {
-		if (!pp_ops[DITHER].pp_set_config) {
+		if (!pp_ops[DITHER].pp_set_config && addr) {
 			pp_dither_config(addr, pp_sts,
 				&mdss_pp_res->dither_disp_cfg[disp_num]);
 		} else {
@@ -4826,6 +4876,11 @@ gamut_clk_off:
 				goto gamut_set_dirty;
 			}
 		}
+		if (pp_gm_has_invalid_lut_size(config)) {
+			pr_debug("invalid lut size for gamut\n");
+			ret = -EINVAL;
+			goto gamut_config_exit;
+		}
 		local_cfg = *config;
 		tbl_off = mdss_pp_res->gamut_tbl[disp_num];
 		for (i = 0; i < MDP_GAMUT_TABLE_NUM; i++) {
@@ -5308,7 +5363,8 @@ static int pp_hist_collect(struct mdp_histogram_data *hist,
 		else if (block == SSPP_VIG)
 			v_base = ctl_base +
 				MDSS_MDP_REG_VIG_HIST_CTL_BASE;
-		sum = pp_hist_read(v_base, hist_info);
+		if (v_base)
+			sum = pp_hist_read(v_base, hist_info);
 	}
 	writel_relaxed(0, hist_info->base);
 	mdss_mdp_clk_ctrl(MDP_BLOCK_POWER_OFF);

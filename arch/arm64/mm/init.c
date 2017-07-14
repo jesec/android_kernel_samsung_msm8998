@@ -48,6 +48,10 @@
 
 #include "mm.h"
 
+#ifdef CONFIG_RELOCATABLE_KERNEL
+extern int rkp_assign_mem_to_hyp(phys_addr_t addr, size_t size);
+#endif
+
 /*
  * We need to be able to catch inadvertent references to memstart_addr
  * that occur (potentially in generic code) before arm64_memblock_init()
@@ -171,7 +175,9 @@ early_param("mem", early_mem);
 void __init arm64_memblock_init(void)
 {
 	const s64 linear_region_size = -(s64)PAGE_OFFSET;
-
+#ifdef CONFIG_RELOCATABLE_KERNEL
+	u64 kaslr_slot0_phys;
+#endif
 	/*
 	 * Ensure that the linear region takes up exactly half of the kernel
 	 * virtual address space. This way, we can distinguish a linear address
@@ -226,7 +232,14 @@ void __init arm64_memblock_init(void)
 	 * Register the kernel text, kernel data, initrd, and initial
 	 * pagetables with memblock.
 	 */
+#ifndef	CONFIG_RELOCATABLE_KERNEL
 	memblock_reserve(__pa(_text), _end - _text);
+#else
+	/* This is actually dram_start + TEXT_OFFSET = 0x80080000 */
+	kaslr_slot0_phys = (u64) (memstart_addr + 0x80000);
+	/* Reserve memblock from slot0 _text to actual _text */
+	memblock_reserve(kaslr_slot0_phys, _end - _text + (__pa(_text) - kaslr_slot0_phys));
+#endif
 #ifdef CONFIG_BLK_DEV_INITRD
 	if (initrd_start) {
 		memblock_reserve(initrd_start, initrd_end - initrd_start);
@@ -434,6 +447,10 @@ void free_initmem(void)
 {
 	free_initmem_default(0);
 	fixup_init();
+#ifdef	CONFIG_RELOCATABLE_KERNEL
+#define	KASLR_BL_ADDR 0x9fa07000
+	rkp_assign_mem_to_hyp(KASLR_BL_ADDR, PAGE_SIZE);
+#endif
 }
 
 #ifdef CONFIG_BLK_DEV_INITRD

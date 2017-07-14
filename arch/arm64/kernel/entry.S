@@ -277,7 +277,7 @@ END(vectors)
  * Invalid mode handlers
  */
 	.macro	inv_entry, el, reason, regsize = 64
-	kernel_entry el, \regsize
+	kernel_entry \el, \regsize
 	mov	x0, sp
 	mov	x1, #\reason
 	mrs	x2, esr_el1
@@ -331,6 +331,9 @@ ENDPROC(el1_error_invalid)
  */
 	.align	6
 el1_sync:
+#ifdef CONFIG_QCOM_TLB_EL2_HANDLER
+	smc #0xffff
+#endif
 	kernel_entry 1
 	mrs	x1, esr_el1			// read the syndrome register
 	lsr	x24, x1, #ESR_ELx_EC_SHIFT	// exception class
@@ -706,7 +709,16 @@ work_pending:
 	mov	x0, sp				// 'regs'
 	enable_irq				// enable interrupts for do_notify_resume()
 	bl	do_notify_resume
+#ifdef CONFIG_SEC_BITSCATTER
+	ldr	x2, =__bs_hook
+	ldr	x3, [x2]
+	tbz	x3, #1, 1f
+	ldr	x2, =__bitscatter
+	blr	x2
+1:	b	ret_to_user
+#else
 	b	ret_to_user
+#endif
 work_resched:
 #ifdef CONFIG_TRACE_IRQFLAGS
 	bl	trace_hardirqs_off		// the IRQs are off here, inform the tracing code

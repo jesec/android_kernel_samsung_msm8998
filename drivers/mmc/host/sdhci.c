@@ -1863,6 +1863,10 @@ static void sdhci_do_set_ios(struct sdhci_host *host, struct mmc_ios *ios)
 				mmc_card_sdio(host->mmc->card))
 			sdhci_cfg_irq(host, true, false);
 		spin_unlock_irqrestore(&host->lock, flags);
+#if defined(CONFIG_SEC_HYBRID_TRAY)
+		sdhci_set_power(host, ios->power_mode, ios->vdd);
+		host->ops->set_clock(host, ios->clock);
+#endif
 		return;
 	}
 	spin_unlock_irqrestore(&host->lock, flags);
@@ -3157,7 +3161,7 @@ static irqreturn_t sdhci_irq(int irq, void *dev_id)
 
 	do {
 		if (host->mmc->card && mmc_card_cmdq(host->mmc->card) &&
-		    !mmc_host_halt(host->mmc)) {
+		!mmc_host_halt(host->mmc) && !mmc_host_cq_disable(host->mmc)) {
 			pr_debug("*** %s: cmdq intr: 0x%08x\n",
 					mmc_hostname(host->mmc),
 					intmask);

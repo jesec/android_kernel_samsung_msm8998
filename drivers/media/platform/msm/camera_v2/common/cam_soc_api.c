@@ -354,7 +354,104 @@ int msm_camera_clk_enable(struct device *dev,
 
 	if (enable) {
 		for (i = 0; i < num_clk; i++) {
-			CDBG("enable %s\n", clk_info[i].clk_name);
+			CDBG("enable %s, %ld\n", clk_info[i].clk_name, clk_info[i].clk_rate);
+			if (clk_info[i].clk_rate > 0) {
+				clk_rate = clk_round_rate(clk_ptr[i],
+					clk_info[i].clk_rate);
+				if (clk_rate < 0) {
+					pr_err("%s round failed\n",
+						   clk_info[i].clk_name);
+					goto cam_clk_set_err;
+				}
+				rc = clk_set_rate(clk_ptr[i],
+					clk_rate);
+				if (rc < 0) {
+					pr_err("%s set failed\n",
+						clk_info[i].clk_name);
+					goto cam_clk_set_err;
+				}
+
+			} else if (clk_info[i].clk_rate == INIT_RATE) {
+				clk_rate = clk_get_rate(clk_ptr[i]);
+				if (clk_rate == 0) {
+					clk_rate =
+						  clk_round_rate(clk_ptr[i], 0);
+					if (clk_rate <= 0) {
+						pr_err("%s round rate failed\n",
+							  clk_info[i].clk_name);
+						goto cam_clk_set_err;
+					}
+				}
+				rc = clk_set_rate(clk_ptr[i], clk_rate);
+				if (rc < 0) {
+					pr_err("%s set rate failed\n",
+						  clk_info[i].clk_name);
+					goto cam_clk_set_err;
+				}
+			}
+			rc = clk_prepare_enable(clk_ptr[i]);
+			if (rc < 0) {
+				pr_err("%s enable failed\n",
+					   clk_info[i].clk_name);
+				goto cam_clk_enable_err;
+			}
+			if (clk_info[i].delay > 20) {
+				msleep(clk_info[i].delay);
+			} else if (clk_info[i].delay) {
+				usleep_range(clk_info[i].delay * 1000,
+					(clk_info[i].delay * 1000) + 1000);
+			}
+		}
+	} else {
+		for (i = num_clk - 1; i >= 0; i--) {
+			if (clk_ptr[i] != NULL) {
+				CDBG("%s disable %s\n", __func__,
+					clk_info[i].clk_name);
+				clk_disable_unprepare(clk_ptr[i]);
+			}
+		}
+	}
+	return rc;
+
+cam_clk_enable_err:
+cam_clk_set_err:
+	for (i--; i >= 0; i--) {
+		if (clk_ptr[i] != NULL)
+			clk_disable_unprepare(clk_ptr[i]);
+	}
+	return rc;
+}
+EXPORT_SYMBOL(msm_camera_clk_enable);
+
+int msm_camera_s_clk_enable(struct device *dev,
+		struct msm_cam_clk_info *clk_info,
+		struct clk **clk_ptr, int num_clk, int enable,
+		struct msm_camera_power_ctrl_t *shared_ctrl)
+{
+	int i = 0;
+	size_t j = 0;
+	int rc = 0;
+	long clk_rate;
+	bool skip_flag = false;
+
+	if (enable) {
+		for (i = 0; i < num_clk; i++) {
+			CDBG("enable %s, %ld\n", clk_info[i].clk_name, clk_info[i].clk_rate);
+			if (shared_ctrl) {
+				skip_flag = false;
+				for(j = 0; j < shared_ctrl->clk_info_size; j++) {
+					if (!strcmp(shared_ctrl->clk_info[j].clk_name,
+					    clk_info[i].clk_name)) {
+						skip_flag = true;
+						break;
+					}
+				}
+				if (skip_flag) {
+					CDBG("[POWER_DBG] Enable : %s skipped\n",
+						clk_info[i].clk_name);
+					continue;
+				}
+			}
 			if (clk_info[i].clk_rate > 0) {
 				clk_rate = clk_round_rate(clk_ptr[i],
 					clk_info[i].clk_rate);
@@ -406,6 +503,22 @@ int msm_camera_clk_enable(struct device *dev,
 	} else {
 		for (i = num_clk - 1; i >= 0; i--) {
 			if (clk_ptr[i] != NULL) {
+				if (shared_ctrl) {
+					skip_flag = false;
+					for(j = 0; j < shared_ctrl->clk_info_size; j++) {
+					    if (!strcmp(shared_ctrl->clk_info[j].clk_name,
+					        clk_info[i].clk_name)) {
+					        skip_flag = true;
+					        break;
+					    }
+					}
+					if (skip_flag) {
+					    CDBG("[POWER_DBG] Disable : %s skipped\n",
+					        clk_info[i].clk_name);
+					    continue;
+					}
+				}
+
 				CDBG("%s disable %s\n", __func__,
 					clk_info[i].clk_name);
 				clk_disable_unprepare(clk_ptr[i]);
@@ -422,7 +535,8 @@ cam_clk_set_err:
 	}
 	return rc;
 }
-EXPORT_SYMBOL(msm_camera_clk_enable);
+EXPORT_SYMBOL(msm_camera_s_clk_enable);
+
 
 /* Set rate on a specific clock */
 long msm_camera_clk_set_rate(struct device *dev,

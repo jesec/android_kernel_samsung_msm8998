@@ -1786,4 +1786,9 @@ uint32_t voice_get_topology(uint32_t topology_idx);
 int voc_set_sound_focus(struct sound_focus_param sound_focus_param);
 int voc_get_sound_focus(struct sound_focus_param *soundFocusData);
 int voc_get_source_tracking(struct source_tracking_param *sourceTrackingData);
+
+#ifdef CONFIG_SEC_SND_ADAPTATION
+struct common_data* voice_get_common_data(void);
+#endif /* CONFIG_SEC_SND_ADAPTATION */
+
 #endif

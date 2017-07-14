@@ -284,6 +284,14 @@ config DM_REQ_CRYPT
 
 	  If unsure, say N.
 
+config DM_NOT_USE_KDMWORKER
+	bool "Do not use kdmwork thread for DM_TYPE_REQUEST_BASED type."
+	default y
+	---help---
+	  This option disables the use of kdmwork thread for request-based
+	  DM devices. It works only when not using blk-mq.
+	  If unsure, say N.
+
 config DM_SNAPSHOT
        tristate "Snapshot target"
        depends on BLK_DEV_DM
@@ -533,4 +541,14 @@ config DM_ANDROID_VERITY
 	  of the metadata contents are verified against the key included
 	  in the system keyring. Upon success, the underlying verity
 	  target is setup.
+
+config CRYPTO_FDE_KEY_UPDATE
+	tristate "Update ICE key slot #2 for dm-req-crypt by outside key"
+	default n
+	---help---
+	  ICE key can change to sec key.
+	  It uses only slot #2.
+
+	  If unsure, say N.
+
 endif # MD

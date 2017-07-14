@@ -62,7 +62,7 @@ static int __get_iommu_pgprot(struct dma_attrs *attrs, int prot,
 
 static struct gen_pool *atomic_pool;
 #define NO_KERNEL_MAPPING_DUMMY 0x2222
-#define DEFAULT_DMA_COHERENT_POOL_SIZE  SZ_256K
+#define DEFAULT_DMA_COHERENT_POOL_SIZE  SZ_2M
 static size_t atomic_pool_size __initdata = DEFAULT_DMA_COHERENT_POOL_SIZE;
 
 static int __init early_coherent_pool(char *p)
@@ -1796,9 +1796,6 @@ static void arm_iommu_unmap_page(struct device *dev, dma_addr_t handle,
 	int offset = handle & ~PAGE_MASK;
 	int len = PAGE_ALIGN(size + offset);
 
-	if (!iova)
-		return;
-
 	if (!(is_device_dma_coherent(dev) ||
 	      dma_get_attr(DMA_ATTR_SKIP_CPU_SYNC, attrs)))
 		__dma_page_dev_to_cpu(page, offset, size, dir);
@@ -1816,9 +1813,6 @@ static void arm_iommu_sync_single_for_cpu(struct device *dev,
 						mapping->domain, iova));
 	unsigned int offset = handle & ~PAGE_MASK;
 
-	if (!iova)
-		return;
-
 	if (!is_device_dma_coherent(dev))
 		__dma_page_dev_to_cpu(page, offset, size, dir);
 }
@@ -1831,9 +1825,6 @@ static void arm_iommu_sync_single_for_device(struct device *dev,
 	struct page *page = phys_to_page(iommu_iova_to_phys(
 						mapping->domain, iova));
 	unsigned int offset = handle & ~PAGE_MASK;
-
-	if (!iova)
-		return;
 
 	if (!is_device_dma_coherent(dev))
 		__dma_page_cpu_to_dev(page, offset, size, dir);

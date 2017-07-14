@@ -63,14 +63,6 @@ enum {
 	MIGRATE_TYPES
 };
 
-/*
- * Returns a list which contains the migrate types on to which
- * an allocation falls back when the free list for the migrate
- * type mtype is depleted.
- * The end of the list is delimited by the type MIGRATE_TYPES.
- */
-extern int *get_migratetype_fallbacks(int mtype);
-
 #ifdef CONFIG_CMA
 bool is_cma_pageblock(struct page *page);
 #  define is_migrate_cma(migratetype) unlikely((migratetype) == MIGRATE_CMA)
@@ -687,6 +679,12 @@ typedef struct pglist_data {
 					   mem_hotplug_begin/end() */
 	int kswapd_max_order;
 	enum zone_type classzone_idx;
+#ifdef CONFIG_COMPACTION
+	int kcompactd_max_order;
+	enum zone_type kcompactd_classzone_idx;
+	wait_queue_head_t kcompactd_wait;
+	struct task_struct *kcompactd;
+#endif
 #ifdef CONFIG_NUMA_BALANCING
 	/* Lock serializing the migrate rate limiting window */
 	spinlock_t numabalancing_migrate_lock;

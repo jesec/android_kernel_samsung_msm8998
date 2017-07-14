@@ -127,6 +127,38 @@ config USB_GADGET_STORAGE_NUM_BUFFERS
 	   a module parameter as well.
 	   If unsure, say 2.
 
+config USB_G_ANDROID
+	bool "Android Composite Gadget"
+	help
+	  The Android Composite Gadget supports multiple USB
+	  functions: adb, acm, mass storage, mtp, accessory
+	  and rndis.
+	  Each function can be configured and enabled/disabled
+	  dynamically from userspace through a sysfs interface.
+
+config USB_ANDROID_SAMSUNG_COMPOSITE
+	bool "Samsung Composite function"
+	depends on USB_G_ANDROID
+	help
+	  Provides SAMSUNG composite driver.
+	  Multi Configuration.
+	  If you enable this option, android composite will be changed.
+
+config USB_FFS_IPC_LOGGING
+	bool "USB IPC Logging"
+	default n
+	help
+	  USB IPC Logging support
+
+config USB_NCM_SUPPORT_MTU_CHANGE
+	boolean "Samsung NCM MTU Change function"
+	depends on USB_G_ANDROID
+	help
+	   Provides NCM MTU Change support
+	   for samsung gadget driver.
+	   If you enable this option,
+	   NCM MTU Change will be able to be used.
+
 source "drivers/usb/gadget/udc/Kconfig"
 
 #
@@ -178,6 +210,9 @@ config USB_F_RNDIS
 config USB_F_QCRNDIS
 	tristate
 
+config USB_F_RMNET_BAM
+	tristate
+
 config USB_F_MASS_STORAGE
 	tristate
 
@@ -224,6 +259,9 @@ config USB_F_CDEV
 	tristate
 
 config USB_F_QDSS
+	tristate
+
+config USB_F_CONN_GADGET
 	tristate
 
 choice
@@ -344,6 +382,19 @@ config USB_CONFIGFS_RNDIS
 	   as the "driver info file".  For versions of MS-Windows older than
 	   XP, you'll need to download drivers from Microsoft's website; a URL
 	   is given in comments found in that info file.
+
+config USB_CONFIGFS_RMNET_BAM
+	bool "RMNET"
+	depends on USB_CONFIGFS
+	depends on IPA
+	select USB_F_RMNET_BAM
+
+config USB_CONFIGFS_CONN_GADGET
+	bool "Samsung Sidesync function"
+	depends on USB_CONFIGFS
+	select USB_F_CONN_GADGET
+	help
+	  USB Sidesync function support
 
 config USB_CONFIGFS_EEM
 	bool "Ethernet Emulation Model (EEM)"
@@ -556,5 +607,14 @@ config USB_CONFIGFS_F_QDSS
 source "drivers/usb/gadget/legacy/Kconfig"
 
 endchoice
+
+config USB_DUN_SUPPORT
+	boolean "DUN support function"
+        depends on USB_F_ACM
+	help
+	  Provides USB modem serial driver.
+	  This function makes connection to acm from data router.
+	  It uses misc register.
+	  Support fops : open, close, release, read, poll, llseek, ioctl
 
 endif # USB_GADGET

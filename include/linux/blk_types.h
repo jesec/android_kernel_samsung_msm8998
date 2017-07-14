@@ -128,11 +128,18 @@ struct bio {
 #define BIO_CHAIN	7	/* chained bio, ->bi_remaining in effect */
 #define BIO_REFFED	8	/* bio has elevated ->bi_cnt */
 
+#ifdef CONFIG_JOURNAL_DATA_TAG
+/* XXX Be carefull not to touch BIO_RESET_BITS */
+#define BIO_JOURNAL    11      /* bio contains journal data */
+#define BIO_JMETA      12      /* bio contains metadata */
+#define BIO_JOURNAL_TAG_MASK   ((1UL << BIO_JOURNAL) | (1UL << BIO_JMETA))
+#endif
+
 /*
  * Flags starting here get preserved by bio_reset() - this includes
  * BIO_POOL_IDX()
  */
-#define BIO_RESET_BITS	13
+#define BIO_RESET_BITS	13	/* should be larger then BIO_JMETA */
 #define BIO_OWNS_VEC	13	/* bio_free() should free bvec */
 /*
  * Added for Req based dm which need to perform post processing. This flag

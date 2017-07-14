@@ -156,6 +156,19 @@ SECTIONS
 	.altinstr_replacement : {
 		*(.altinstr_replacement)
 	}
+#ifdef CONFIG_RELOCATABLE_KERNEL
+	.rela : {
+		. = ALIGN(8);
+		__reloc_start = .;
+		*(.rela .rela*)
+		__reloc_end = .;
+	}
+	.dynsym : {
+		. = ALIGN(8);
+		__dynsym_start = .;
+		*(.dynsym)
+	}
+#else
 	.rela : ALIGN(8) {
 		*(.rela .rela*)
 	}
@@ -165,6 +178,7 @@ SECTIONS
 	.dynstr : {
 		*(.dynstr)
 	}
+#endif
 	.hash : {
 		*(.hash)
 	}

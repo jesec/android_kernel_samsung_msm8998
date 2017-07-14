@@ -14,6 +14,10 @@
 #include <linux/fs.h>
 #include <linux/pfk.h>
 
+#ifdef CONFIG_EXT4_SEC_CRYPTO_EXTENSION
+#include "crypto_sec.h"
+#endif
+
 #define EXT4_KEY_DESCRIPTOR_SIZE 8
 
 /* Policy provided via an ioctl on the topmost directory */
@@ -26,7 +30,11 @@ struct ext4_encryption_policy {
 } __attribute__((__packed__));
 
 #define EXT4_ENCRYPTION_CONTEXT_FORMAT_V1 1
+
+#ifndef EXT4_KEY_DERIVATION_NONCE_SIZE
 #define EXT4_KEY_DERIVATION_NONCE_SIZE 16
+#define EXT4_ESTIMATED_NONCE_SIZE	EXT4_AES_128_ECB_KEY_SIZE
+#endif
 
 #define EXT4_POLICY_FLAGS_PAD_4		0x00
 #define EXT4_POLICY_FLAGS_PAD_8		0x01

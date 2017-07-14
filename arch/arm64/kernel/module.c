@@ -29,16 +29,34 @@
 #include <asm/alternative.h>
 #include <asm/insn.h>
 #include <asm/sections.h>
+#include <linux/random.h>
+
+#ifdef  CONFIG_RELOCATABLE_KERNEL
+int randomize_module_space __read_mostly =  1;
+#define RANDOMIZE_MODULE_REGION  (1*1024*1024)
+#endif
 
 void *module_alloc(unsigned long size)
 {
 	void *p;
 
+#ifdef CONFIG_RELOCATABLE_KERNEL
+	static unsigned long module_va = 0;
+	/* random address is 16K ALIGN and will have 16MB shift spaces, this will reduce the avaliable memory space for modules */
+	if(module_va == 0) {
+		module_va = MODULES_VADDR;
+		if (randomize_module_space)
+			module_va += ALIGN( get_random_int() %  RANDOMIZE_MODULE_REGION, PAGE_SIZE * 4);
+	}
+	p = __vmalloc_node_range(size, 1, module_va, module_alloc_base + MODULES_VSIZE,
+				    GFP_KERNEL, PAGE_KERNEL_EXEC, 0,
+				    NUMA_NO_NODE, __builtin_return_address(0));
+#else
 	p = __vmalloc_node_range(size, MODULE_ALIGN, module_alloc_base,
 				module_alloc_base + MODULES_VSIZE,
 				GFP_KERNEL, PAGE_KERNEL_EXEC, 0,
 				NUMA_NO_NODE, __builtin_return_address(0));
-
+#endif
 	if (!p && IS_ENABLED(CONFIG_ARM64_MODULE_PLTS) &&
 	    !IS_ENABLED(CONFIG_KASAN))
 		/*

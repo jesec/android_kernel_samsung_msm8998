@@ -1318,7 +1318,11 @@ emsgsize:
 	 */
 	if (transhdrlen && sk->sk_protocol == IPPROTO_UDP &&
 	    headersize == sizeof(struct ipv6hdr) &&
+#if defined(CONFIG_MACH_DREAMQLTE_KDI) || defined(CONFIG_MACH_DREAM2QLTE_KDI)
+	    length < mtu - headersize - dst_exthdrlen &&
+#else
 	    length < mtu - headersize &&
+#endif
 	    !(flags & MSG_MORE) &&
 	    rt->dst.dev->features & NETIF_F_V6_CSUM)
 		csummode = CHECKSUM_PARTIAL;

@@ -1,4 +1,4 @@
-/* Copyright (c) 2015-2016, The Linux Foundation. All rights reserved.
+/* Copyright (c) 2015-2017, The Linux Foundation. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -28,6 +28,7 @@ struct sde_hw_rotator_context;
 #define SDE_ROT_FLAG_SOURCE_ROTATED_90      0x8
 #define SDE_ROT_FLAG_ROT_90                 0x10
 #define SDE_ROT_FLAG_DEINTERLACE            0x20
+#define SDE_ROT_FLAG_SECURE_CAMERA_SESSION  0x40
 
 /**
  * General defines
@@ -72,6 +73,8 @@ struct sde_hw_rot_sspp_cfg {
 	struct sde_mdp_data          *data;
 	u32                           img_width;
 	u32                           img_height;
+	u32                           fps;
+	u64                           bw;
 };
 
 
@@ -92,6 +95,8 @@ struct sde_hw_rot_wb_cfg {
 	u32                             img_height;
 	u32                             v_downscale_factor;
 	u32                             h_downscale_factor;
+	u32                             fps;
+	u64                             bw;
 };
 
 
@@ -213,6 +218,7 @@ struct sde_hw_rotator_context {
 	u32    last_regdma_timestamp;
 	dma_addr_t ts_addr;
 	bool   is_secure;
+	bool   is_traffic_shaping;
 };
 
 /**
@@ -355,22 +361,22 @@ static inline void sde_hw_rotator_put_ctx(struct sde_hw_rotator_context *ctx)
 			 ctx->q_id, idx, ctx, ctx->session_id);
 }
 
-/**
+/*
  * sde_hw_rotator_clr_ctx(): Clearing rotator context according to its
  * timestamp.
  */
 static inline void sde_hw_rotator_clr_ctx(struct sde_hw_rotator_context *ctx)
 {
-	 struct sde_hw_rotator *rot = ctx->rot;
-	 u32 idx = sde_hw_rotator_get_regdma_ctxidx(ctx);
-	 unsigned long flags;
+	struct sde_hw_rotator *rot = ctx->rot;
+	u32 idx = sde_hw_rotator_get_regdma_ctxidx(ctx);
+	unsigned long flags;
 
-	 spin_lock_irqsave(&rot->rotisr_lock, flags);
-	 rot->rotCtx[ctx->q_id][idx] = NULL;
-	 spin_unlock_irqrestore(&rot->rotisr_lock, flags);
+	spin_lock_irqsave(&rot->rotisr_lock, flags);
+	rot->rotCtx[ctx->q_id][idx] = NULL;
+	spin_unlock_irqrestore(&rot->rotisr_lock, flags);
 
-	 SDEROT_DBG("rotCtx[%d][%d] <== null | session-id:%d\n",
-			 ctx->q_id, idx, ctx->session_id);
+	SDEROT_DBG("rotCtx[%d][%d] <== null | session-id:%d\n",
+			ctx->q_id, idx, ctx->session_id);
 }
 
 #endif /*_SDE_ROTATOR_R3_INTERNAL_H */

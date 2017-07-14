@@ -145,5 +145,7 @@ int ion_system_secure_heap_assign_sg(struct sg_table *sgt, int dest_vmid);
 struct sg_table *ion_create_chunked_sg_table(phys_addr_t buffer_base,
 					size_t chunk_size, size_t total_size);
 
+void show_ion_usage_simple(struct ion_device *dev, unsigned long is_simple,
+				struct seq_file *s);
 void show_ion_usage(struct ion_device *dev);
 #endif /* _MSM_ION_PRIV_H */

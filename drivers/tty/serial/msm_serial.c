@@ -162,6 +162,21 @@
 #define UARTDM_TX_MAX			256   /* in bytes, valid for <= 1p3 */
 #define UARTDM_RX_SIZE			(UART_XMIT_SIZE / 4)
 
+#define	ATD_TTY_DEV_MAX	15
+#define ATD_HS_DEV_NAME "/dev/ttyHS8"
+static char atd_tty_dev[ATD_TTY_DEV_MAX];
+static int use_hs_for_at;
+static int __init get_atd_tty_dev(char *str)
+{
+	strlcpy(atd_tty_dev, str, ATD_TTY_DEV_MAX);
+	//pr_info("%s: atd_tty_dev : %s, %s\n", __func__, atd_tty_dev, ATD_HS_DEV_NAME);
+	if (strlen(atd_tty_dev) == strlen(ATD_HS_DEV_NAME) &&
+		!strncmp(atd_tty_dev, ATD_HS_DEV_NAME, strlen(atd_tty_dev)))
+		use_hs_for_at = 1;
+	return 0;
+}
+__setup("androidboot.sec_atd.tty=", get_atd_tty_dev);
+
 enum {
 	UARTDM_1P1 = 1,
 	UARTDM_1P2,
@@ -1836,6 +1851,11 @@ static int msm_serial_probe(struct platform_device *pdev)
 	struct uart_port *port;
 	const struct of_device_id *id;
 	int irq, line;
+
+	if (use_hs_for_at) {
+		pr_info("Use HS driver for ATD\n");
+		return -ENODEV;
+	}
 
 	if (pdev->dev.of_node)
 		line = of_alias_get_id(pdev->dev.of_node, "serial");

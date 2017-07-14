@@ -56,6 +56,19 @@
 #define TRACE_MSM_THERMAL
 #include <trace/trace_thermal.h>
 
+#include <linux/qcom/sec_debug_partition.h>
+
+
+#ifdef CONFIG_SEC_PM
+#include <linux/ipc_logging.h>
+extern void *lmh_dcvs_ipc_log;
+#define THERMAL_IPC_LOG(msg...)					\
+	do {							\
+		if (lmh_dcvs_ipc_log)				\
+			ipc_log_string(lmh_dcvs_ipc_log, msg);	\
+	} while (0)
+#endif
+
 #define MSM_LIMITS_DCVSH		0x10
 #define MSM_LIMITS_NODE_DCVS		0x44435653
 #define MSM_LIMITS_SUB_FN_GENERAL	0x47454E00
@@ -132,6 +145,10 @@
 
 static struct msm_thermal_data msm_thermal_info;
 static struct delayed_work check_temp_work, retry_hotplug_work;
+#if CONFIG_SEC_PM_DEBUG
+static struct delayed_work ts_print_work;
+static int ts_print_num[] = {1, 2, 3, 4, 7, 8, 9, 10, 13, 18, 20};
+#endif
 static bool core_control_enabled;
 static uint32_t cpus_offlined;
 static cpumask_var_t cpus_previously_online;
@@ -253,6 +270,8 @@ struct cpu_info {
 	uint32_t limited_min_freq;
 	bool freq_thresh_clear;
 	struct cluster_info *parent_ptr;
+	uint32_t acc_throttled_count;
+	uint32_t acc_hotplug_count;
 };
 
 struct rail {
@@ -494,6 +513,78 @@ static ssize_t thermal_config_debugfs_write(struct file *file,
 				pr_debug("Remove voting to %s\n", #name);     \
 		}                                                             \
 	} while (0)
+
+
+static ap_health_t *ap_health;
+
+static void update_cpu_throttled_count(cpumask_t *mask)
+{
+	int cpu;
+
+	if (!mask)
+		return;
+
+	if (ap_health == NULL)
+		ap_health = ap_health_data_read();
+
+	for_each_cpu(cpu, mask) {
+		cpus[cpu].acc_throttled_count++;
+		if (ap_health == NULL)
+			pr_err("%s: throttle cpu%d, %u times - not stored\n",
+				__func__, cpu, cpus[cpu].acc_throttled_count);
+		else {
+			ap_health->thermal.cpu_throttle_cnt[cpu]++;
+			ap_health->daily_thermal.cpu_throttle_cnt[cpu]++;
+			ap_health_data_write(ap_health);
+			pr_err("%s: throttle cpu%d, %u, %u, %u times\n",
+				__func__, cpu, cpus[cpu].acc_throttled_count,
+				ap_health->thermal.cpu_throttle_cnt[cpu],
+				ap_health->daily_thermal.cpu_throttle_cnt[cpu]);
+		}
+	}
+
+	return;
+}
+
+static void update_hotplug_count(int cpu)
+{
+	cpus[cpu].acc_hotplug_count++;
+
+	if (ap_health == NULL)
+		ap_health = ap_health_data_read();
+
+	if (ap_health == NULL)
+		pr_err("%s: hotplug cpu%d, %u times - not stored\n",
+			__func__, cpu, cpus[cpu].acc_hotplug_count);
+	else {
+		ap_health->thermal.cpu_hotplug_cnt[cpu]++; 
+		ap_health->daily_thermal.cpu_hotplug_cnt[cpu]++; 
+		ap_health_data_write(ap_health);
+		pr_err("%s: hotplug cpu%d, %u, %u, %u times\n",
+			__func__, cpu, cpus[cpu].acc_hotplug_count,
+			ap_health->thermal.cpu_hotplug_cnt[cpu],
+			ap_health->daily_thermal.cpu_hotplug_cnt[cpu]);
+	}
+
+	return;
+}
+
+static void update_thermal_reset_count(void)
+{
+	if (ap_health == NULL)
+		ap_health = ap_health_data_read();
+
+	if (ap_health != NULL) {
+		ap_health->thermal.ktm_reset_cnt++;
+		ap_health->daily_thermal.ktm_reset_cnt++;
+		ap_health_data_write(ap_health);
+		pr_err("%s: %u %u times\n",
+			__func__, ap_health->thermal.ktm_reset_cnt,
+			ap_health->daily_thermal.ktm_reset_cnt);
+	}
+
+	return;
+}
 
 static void uio_init(struct platform_device *pdev)
 {
@@ -1082,6 +1173,7 @@ static void update_cpu_freq(int cpu, enum freq_limits changed)
 		} else if (!cpumask_intersects(&mask, &throttling_mask)) {
 			cpumask_or(&throttling_mask, &mask, &throttling_mask);
 			set_cpu_throttled(&mask, true);
+			update_cpu_throttled_count(&mask);
 		}
 		trace_thermal_pre_frequency_mit(cpu,
 			cpus[cpu].limited_max_freq,
@@ -2812,6 +2904,9 @@ static void msm_thermal_bite(int zone_id, int temp)
 	int tsens_id = 0;
 	int ret = 0;
 
+	update_thermal_reset_count();
+	sec_debug_set_thermal_upload();
+
 	ret = zone_id_to_tsen_id(zone_id, &tsens_id);
 	if (ret < 0) {
 		pr_err("Zone:%d reached temperature:%d. Err = %d System reset\n",
@@ -2829,6 +2924,13 @@ static void msm_thermal_bite(int zone_id, int temp)
 				 THERM_SECURE_BITE_CMD), &desc);
 	}
 }
+#ifdef CONFIG_USER_RESET_DEBUG_TEST
+void force_thermal_reset(void)
+{
+	msm_thermal_bite(0, msm_thermal_info.therm_reset_temp_degC);
+}
+EXPORT_SYMBOL(force_thermal_reset);
+#endif
 
 static int do_therm_reset(void)
 {
@@ -2919,16 +3021,22 @@ static void __ref do_core_control(int temp)
 				continue;
 			if (cpus_offlined & BIT(i) && !cpu_online(i))
 				continue;
-			pr_info("Set Offline: CPU%d Temp: %d\n",
+			pr_err("Set Offline: CPU%d Temp: %d\n",
 					i, temp);
+#ifdef CONFIG_SEC_PM
+			THERMAL_IPC_LOG("Set Offline: CPU%d Temp: %d\n", i, temp);
+#endif
 			lock_device_hotplug();
 			if (cpu_online(i)) {
 				cpu_dev = get_cpu_device(i);
 				trace_thermal_pre_core_offline(i);
 				ret = device_offline(cpu_dev);
-				if (ret)
+				if (ret) {
 					pr_err("Error %d offline core %d\n",
 					       ret, i);
+				} else {
+					update_hotplug_count(i);
+				}
 				trace_thermal_post_core_offline(i,
 					cpumask_test_cpu(i, cpu_online_mask));
 			}
@@ -2943,8 +3051,11 @@ static void __ref do_core_control(int temp)
 			if (!(cpus_offlined & BIT(i)))
 				continue;
 			cpus_offlined &= ~BIT(i);
-			pr_info("Allow Online CPU%d Temp: %d\n",
+			pr_err("Allow Online CPU%d Temp: %d\n",
 					i, temp);
+#ifdef CONFIG_SEC_PM
+			THERMAL_IPC_LOG("Allow Online CPU%d Temp: %d\n", i, temp);
+#endif
 			/*
 			 * If this core is already online, then bring up the
 			 * next offlined core.
@@ -2974,6 +3085,7 @@ static void __ref do_core_control(int temp)
 	}
 	mutex_unlock(&core_control_mutex);
 }
+
 /* Call with core_control_mutex locked */
 static int __ref update_offline_cores(int val)
 {
@@ -3005,7 +3117,11 @@ static int __ref update_offline_cores(int val)
 					cpu, ret);
 				pend_hotplug_req = true;
 			} else {
-				pr_debug("Offlined CPU%d\n", cpu);
+				pr_err("Offlined CPU%d\n", cpu);
+				update_hotplug_count(cpu);
+#ifdef CONFIG_SEC_PM
+				THERMAL_IPC_LOG("Offlined CPU%d\n", cpu);
+#endif
 			}
 			trace_thermal_post_core_offline(cpu,
 				cpumask_test_cpu(cpu, cpu_online_mask));
@@ -3034,7 +3150,10 @@ static int __ref update_offline_cores(int val)
 					"Unable to online CPU%d. err:%d\n",
 					cpu, ret);
 			} else {
-				pr_debug("Onlined CPU%d\n", cpu);
+				pr_err("Onlined CPU%d\n", cpu);
+#ifdef CONFIG_SEC_PM
+				THERMAL_IPC_LOG("Onlined CPU%d\n", cpu);
+#endif
 				trace_thermal_post_core_online(cpu,
 					cpumask_test_cpu(cpu, cpu_online_mask));
 			}
@@ -3532,6 +3651,29 @@ reschedule:
 		schedule_delayed_work(&check_temp_work,
 				msecs_to_jiffies(msm_thermal_info.poll_ms));
 }
+
+#if CONFIG_SEC_PM_DEBUG
+static void __ref ts_print(struct work_struct *work)
+{
+	struct tsens_device tsens_dev;
+	int temp = 0;
+	int i = 0, added = 0, ret = 0;
+	char buffer[500] = { 0, };
+
+	ret = sprintf(buffer + added, "tsens");
+	added += ret;
+	for (i = 0; i < (sizeof(ts_print_num) / sizeof(int)); i++) {
+		tsens_dev.sensor_num = ts_print_num[i];
+		tsens_get_temp(&tsens_dev, &temp);
+		ret = sprintf(buffer + added, "[%d:%d]", ts_print_num[i], temp);
+		added += ret;
+	}
+	pr_info("%s\n", buffer);
+
+	/* For every 5s log the temperature values of all the msm tsens */
+	schedule_delayed_work(&ts_print_work, HZ * 5);
+}
+#endif
 
 static int __ref msm_thermal_cpu_callback(struct notifier_block *nfb,
 		unsigned long action, void *hcpu)
@@ -7236,6 +7378,10 @@ static int msm_thermal_dev_exit(struct platform_device *inp_dev)
 	if (msm_therm_debugfs && msm_therm_debugfs->parent)
 		debugfs_remove_recursive(msm_therm_debugfs->parent);
 	msm_thermal_ioctl_cleanup();
+#if CONFIG_SEC_PM_DEBUG
+	cancel_delayed_work_sync(&ts_print_work);
+#endif
+
 	if (thresh) {
 		if (vdd_rstr_enabled) {
 			sensor_mgr_remove_threshold(
@@ -7326,8 +7472,32 @@ static struct platform_driver msm_thermal_device_driver = {
 	.remove = msm_thermal_dev_exit,
 };
 
+static int msm_thermal_dbg_part_notifier_callback(
+	struct notifier_block *nfb, unsigned long action, void *data)
+{
+	switch (action) {
+		case DBG_PART_DRV_INIT_DONE:
+			ap_health = ap_health_data_read();
+			break;
+		default:
+			return NOTIFY_DONE;
+	}
+
+	return NOTIFY_OK;
+}
+
+
+static struct notifier_block msm_thermal_dbg_part_notifier = {
+	.notifier_call = msm_thermal_dbg_part_notifier_callback,
+};
+
 int __init msm_thermal_device_init(void)
 {
+#if CONFIG_SEC_PM_DEBUG
+	INIT_DELAYED_WORK(&ts_print_work, ts_print);
+	schedule_delayed_work(&ts_print_work, (HZ * 2));
+#endif
+	dbg_partition_notifier_register(&msm_thermal_dbg_part_notifier);
 	return platform_driver_register(&msm_thermal_device_driver);
 }
 arch_initcall(msm_thermal_device_init);

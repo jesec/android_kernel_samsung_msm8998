@@ -205,15 +205,10 @@ config SND_SOC_MSM8998
 	select MSM_QDSP6V2_CODECS
 	select SND_SOC_WCD9335
 	select SND_SOC_WCD934X
-	select SND_SOC_WSA881X
 	select SND_SOC_MSM_HDMI_CODEC_RX
-	select DTS_SRS_TM
 	select QTI_PP
 	select SND_SOC_CPE
-	select MSM_ULTRASOUND
-	select DOLBY_DS2
 	select SND_HWDEP
-        select DTS_EAGLE
 	help
 	 To add support for SoC audio on MSM8998.
 	 This will enable sound soc drivers which
@@ -232,5 +227,17 @@ config SND_SOC_FALCON
 	 interfaces with DSP, also it will enable
 	 the machine driver and the corresponding
 	 DAI-links
+
+config SEC_SND_ADAPTATION
+	tristate "Samsung ADSP Adaptation"
+	default n
+	help
+		To add support for Samsung ADSP solution		
+
+config SND_SOC_JACK_AUDIO
+	tristate "Samsung Jack Audio"
+	default n
+	help
+		To add support for Samsung Jack Audio
 
 endmenu

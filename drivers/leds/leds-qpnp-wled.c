@@ -1109,9 +1109,7 @@ static int qpnp_wled_gm_config(struct qpnp_wled *wled)
 			QPNP_WLED_VLOOP_COMP_AUTO_GM_THRESH_MASK;
 	}
 
-	if (wled->loop_ea_gm < QPNP_WLED_LOOP_EA_GM_MIN)
-		wled->loop_ea_gm = QPNP_WLED_LOOP_EA_GM_MIN;
-	else if (wled->loop_ea_gm > QPNP_WLED_LOOP_EA_GM_MAX)
+	if (wled->loop_ea_gm > QPNP_WLED_LOOP_EA_GM_MAX)
 		wled->loop_ea_gm = QPNP_WLED_LOOP_EA_GM_MAX;
 
 	reg |= wled->loop_ea_gm | QPNP_WLED_VLOOP_COMP_GM_OVERWRITE;

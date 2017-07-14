@@ -19,6 +19,7 @@ obj-$(CONFIG_USB_NET_SR9700)	+= sr9700.o
 obj-$(CONFIG_USB_NET_SR9800)	+= sr9800.o
 obj-$(CONFIG_USB_NET_SMSC75XX)	+= smsc75xx.o
 obj-$(CONFIG_USB_NET_SMSC95XX)	+= smsc95xx.o
+obj-$(CONFIG_USB_NET_SMSC95XX)	+= smscusbnet.o
 obj-$(CONFIG_USB_NET_GL620A)	+= gl620a.o
 obj-$(CONFIG_USB_NET_NET1080)	+= net1080.o
 obj-$(CONFIG_USB_NET_PLUSB)	+= plusb.o

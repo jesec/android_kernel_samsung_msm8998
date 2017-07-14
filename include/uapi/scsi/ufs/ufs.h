@@ -51,8 +51,14 @@ enum desc_idn {
 	QUERY_DESC_IDN_RFU_1		= 0x6,
 	QUERY_DESC_IDN_GEOMETRY		= 0x7,
 	QUERY_DESC_IDN_POWER		= 0x8,
-	QUERY_DESC_IDN_RFU_2		= 0x9,
+	QUERY_DESC_IDN_HEALTH           = 0x9,
+	QUERY_DESC_IDN_RFU_2		= 0xA,
+#ifdef CONFIG_JOURNAL_DATA_TAG
+	QUERY_DESC_IDN_VENDOR		= 0xFF,
+	QUERY_DESC_IDN_MAX		= 0x100,
+#else
 	QUERY_DESC_IDN_MAX,
+#endif
 };
 
 /* UTP QUERY Transaction Specific Fields OpCode */

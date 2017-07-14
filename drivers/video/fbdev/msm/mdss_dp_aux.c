@@ -1,4 +1,4 @@
-/* Copyright (c) 2013, 2014, 2016 The Linux Foundation. All rights reserved.
+/* Copyright (c) 2013-2014, 2016-2017 The Linux Foundation. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -34,6 +34,12 @@
 #include "mdss_dp.h"
 #include "mdss_dp_util.h"
 
+static void dp_sink_parse_test_request(struct mdss_dp_drv_pdata *ep);
+static void dp_sink_parse_sink_count(struct mdss_dp_drv_pdata *ep);
+#ifdef SECDP_AUX_RETRY
+static void secdp_recovery_aux(struct mdss_dp_drv_pdata *dp);
+#endif
+
 /*
  * edp buffer operation
  */
@@ -68,6 +74,21 @@ static char *dp_buf_push(struct edp_buf *eb, int len)
 static int dp_buf_trailing(struct edp_buf *eb)
 {
 	return (int)(eb->end - eb->data);
+}
+
+static void mdss_dp_aux_clear_hw_interrupts(void __iomem *phy_base)
+{
+	u32 data;
+
+	data = dp_read(phy_base + DP_PHY_AUX_INTERRUPT_STATUS);
+	pr_debug("PHY_AUX_INTERRUPT_STATUS=0x%08x\n", data);
+
+	dp_write(phy_base + DP_PHY_AUX_INTERRUPT_CLEAR, 0x1f);
+	dp_write(phy_base + DP_PHY_AUX_INTERRUPT_CLEAR, 0x9f);
+	dp_write(phy_base + DP_PHY_AUX_INTERRUPT_CLEAR, 0);
+
+	/* Ensure that all interrupts are cleared and acked */
+	wmb();
 }
 
 /*
@@ -139,18 +160,19 @@ static int dp_cmd_fifo_tx(struct edp_buf *tp, unsigned char *base)
 		data &= 0x00ff00; /* index = 0, write */
 		if (cnt == 0)
 			data |= BIT(31);  /* INDEX_WRITE */
-		pr_debug("data=%x\n", data);
 		dp_write(base + DP_AUX_DATA, data);
 		cnt++;
 		dp++;
 	}
 
 	data = (tp->trans_num - 1);
-	if (tp->i2c)
+	if (tp->i2c) {
 		data |= BIT(8); /* I2C */
+		data |= BIT(10); /* NO SEND ADDR */
+		data |= BIT(11); /* NO SEND STOP */
+	}
 
 	data |= BIT(9); /* GO */
-	pr_debug("data=%x\n", data);
 	dp_write(base + DP_AUX_TRANS_CTRL, data);
 
 	return tp->len;
@@ -173,7 +195,6 @@ static int dp_cmd_fifo_rx(struct edp_buf *rp, int len, unsigned char *base)
 	data = dp_read(base + DP_AUX_DATA);
 	for (i = 0; i < len; i++) {
 		data = dp_read(base + DP_AUX_DATA);
-		pr_debug("data=%x\n", data);
 		*dp++ = (char)((data >> 8) & 0xff);
 	}
 
@@ -196,9 +217,6 @@ static int dp_aux_write_cmds(struct mdss_dp_drv_pdata *ep,
 
 	cm = cmd;
 	while (cm) {
-		pr_debug("i2c=%d read=%d addr=%x len=%d next=%d\n",
-			cm->i2c, cm->read, cm->addr, cm->len,
-			cm->next);
 		ret = dp_buf_add_cmd(tp, cm);
 		if (ret <= 0)
 			break;
@@ -216,7 +234,13 @@ static int dp_aux_write_cmds(struct mdss_dp_drv_pdata *ep,
 
 	len = dp_cmd_fifo_tx(&ep->txp, ep->base);
 
-	wait_for_completion(&ep->aux_comp);
+	if (!wait_for_completion_timeout(&ep->aux_comp, HZ/4)) {
+		pr_err("aux_write wait_for_completion timeout! : %d\n", ep->aux_error_num);
+#ifdef SECDP_AUX_RETRY
+		ep->aux_error_num = EDP_AUX_ERR_TOUT;
+		secdp_recovery_aux(ep);
+#endif
+	}
 
 	if (ep->aux_error_num == EDP_AUX_ERR_NONE)
 		ret = len;
@@ -254,9 +278,6 @@ static int dp_aux_read_cmds(struct mdss_dp_drv_pdata *ep,
 	cm = cmds;
 	len = 0;
 	while (cm) {
-		pr_debug("i2c=%d read=%d addr=%x len=%d next=%d\n",
-			cm->i2c, cm->read, cm->addr, cm->len,
-			cm->next);
 		ret = dp_buf_add_cmd(tp, cm);
 		len += cm->len;
 		if (ret <= 0)
@@ -275,7 +296,13 @@ static int dp_aux_read_cmds(struct mdss_dp_drv_pdata *ep,
 
 	dp_cmd_fifo_tx(tp, ep->base);
 
-	wait_for_completion(&ep->aux_comp);
+	if (!wait_for_completion_timeout(&ep->aux_comp, HZ/4)) {
+		pr_err("aux_read wait_for_completion timeout! : %d\n", ep->aux_error_num);
+#ifdef SECDP_AUX_RETRY
+		ep->aux_error_num = EDP_AUX_ERR_TOUT;
+		secdp_recovery_aux(ep);
+#endif
+	}
 
 	if (ep->aux_error_num == EDP_AUX_ERR_NONE) {
 		ret = dp_cmd_fifo_rx(rp, len, ep->base);
@@ -302,42 +329,62 @@ int dp_aux_read(void *ep, struct edp_cmd *cmds)
 
 void dp_aux_native_handler(struct mdss_dp_drv_pdata *ep, u32 isr)
 {
-
-	pr_debug("isr=%x\n", isr);
-
-	if (isr & EDP_INTR_AUX_I2C_DONE)
+	if (isr & EDP_INTR_AUX_I2C_DONE) {
 		ep->aux_error_num = EDP_AUX_ERR_NONE;
-	else if (isr & EDP_INTR_WRONG_ADDR)
+	} else if (isr & EDP_INTR_WRONG_ADDR) {
 		ep->aux_error_num = EDP_AUX_ERR_ADDR;
-	else if (isr & EDP_INTR_TIMEOUT)
+	} else if (isr & EDP_INTR_TIMEOUT) {
 		ep->aux_error_num = EDP_AUX_ERR_TOUT;
-	if (isr & EDP_INTR_NACK_DEFER)
+	} else if (isr & EDP_INTR_NACK_DEFER) {
 		ep->aux_error_num = EDP_AUX_ERR_NACK;
+	} else if (isr & EDP_INTR_PHY_AUX_ERR) {
+		ep->aux_error_num = EDP_AUX_ERR_PHY;
+		mdss_dp_aux_clear_hw_interrupts(ep->phy_io.base);
+	} else {
+		ep->aux_error_num = EDP_AUX_ERR_NONE;
+	}
+
+	if (ep->aux_error_num != EDP_AUX_ERR_NONE) {
+		pr_debug("isr=0x%08x\n", isr);
+#ifdef SECDP_AUX_RETRY
+		secdp_recovery_aux(ep);
+#endif
+	}
 
 	complete(&ep->aux_comp);
 }
 
 void dp_aux_i2c_handler(struct mdss_dp_drv_pdata *ep, u32 isr)
 {
-
-	pr_debug("isr=%x\n", isr);
-
 	if (isr & EDP_INTR_AUX_I2C_DONE) {
 		if (isr & (EDP_INTR_I2C_NACK | EDP_INTR_I2C_DEFER))
 			ep->aux_error_num = EDP_AUX_ERR_NACK;
 		else
 			ep->aux_error_num = EDP_AUX_ERR_NONE;
 	} else {
-		if (isr & EDP_INTR_WRONG_ADDR)
+		if (isr & EDP_INTR_WRONG_ADDR) {
 			ep->aux_error_num = EDP_AUX_ERR_ADDR;
-		else if (isr & EDP_INTR_TIMEOUT)
+		} else if (isr & EDP_INTR_TIMEOUT) {
 			ep->aux_error_num = EDP_AUX_ERR_TOUT;
-		if (isr & EDP_INTR_NACK_DEFER)
+		} else if (isr & EDP_INTR_NACK_DEFER) {
+			ep->aux_error_num = EDP_AUX_ERR_NACK_DEFER;
+		} else if (isr & EDP_INTR_I2C_NACK) {
 			ep->aux_error_num = EDP_AUX_ERR_NACK;
-		if (isr & EDP_INTR_I2C_NACK)
-			ep->aux_error_num = EDP_AUX_ERR_NACK;
-		if (isr & EDP_INTR_I2C_DEFER)
-			ep->aux_error_num = EDP_AUX_ERR_NACK;
+		} else if (isr & EDP_INTR_I2C_DEFER) {
+			ep->aux_error_num = EDP_AUX_ERR_DEFER;
+		} else if (isr & EDP_INTR_PHY_AUX_ERR) {
+			ep->aux_error_num = EDP_AUX_ERR_PHY;
+			mdss_dp_aux_clear_hw_interrupts(ep->phy_io.base);
+		} else {
+			ep->aux_error_num = EDP_AUX_ERR_NONE;
+		}
+	}
+
+	if (ep->aux_error_num != EDP_AUX_ERR_NONE) {
+		pr_debug("isr=0x%08x\n", isr);
+#ifdef SECDP_AUX_RETRY
+		secdp_recovery_aux(ep);
+#endif
 	}
 
 	complete(&ep->aux_comp);
@@ -475,10 +522,8 @@ void dp_extract_edid_video_support(struct edp_edid *edid, char *buf)
 		edid->video_intf = *bp & 0x0f;
 		/* 6, 8, 10, 12, 14 and 16 bit per component */
 		edid->color_depth = ((*bp & 0x70) >> 4); /* color bit depth */
-		if (edid->color_depth) {
-			edid->color_depth *= 2;
-			edid->color_depth += 4;
-		}
+		/* decrement to match with the test_bit_depth enum definition */
+		edid->color_depth--;
 		pr_debug("Digital Video intf=%d color_depth=%d\n",
 			 edid->video_intf, edid->color_depth);
 	} else {
@@ -510,12 +555,14 @@ void dp_extract_edid_feature(struct edp_edid *edid, char *buf)
 			edid->dpm, edid->color_format);
 };
 
-char mdss_dp_gen_link_clk(struct mdss_panel_info *pinfo, char lane_cnt)
+char mdss_dp_gen_link_clk(struct mdss_dp_drv_pdata *dp)
 {
 	const u32 encoding_factx10 = 8;
 	const u32 ln_to_link_ratio = 10;
 	u32 min_link_rate, reminder = 0;
 	char calc_link_rate = 0;
+	struct mdss_panel_info *pinfo = &dp->panel_data.panel_info;
+	char lane_cnt = dp->dpcd.max_lane_count;
 
 	pr_debug("clk_rate=%llu, bpp= %d, lane_cnt=%d\n",
 	       pinfo->clk_rate, pinfo->bpp, lane_cnt);
@@ -540,6 +587,7 @@ char mdss_dp_gen_link_clk(struct mdss_panel_info *pinfo, char lane_cnt)
 	 */
 	if (reminder)
 		min_link_rate += 1;
+
 	pr_debug("min_link_rate = %d\n", min_link_rate);
 
 	if (min_link_rate <= DP_LINK_RATE_162)
@@ -549,10 +597,16 @@ char mdss_dp_gen_link_clk(struct mdss_panel_info *pinfo, char lane_cnt)
 	else if (min_link_rate <= DP_LINK_RATE_540)
 		calc_link_rate = DP_LINK_RATE_540;
 	else {
-		pr_err("link_rate = %d is unsupported\n", min_link_rate);
-		calc_link_rate = 0;
+		/* Cap the link rate to the max supported rate */
+		pr_debug("link_rate = %d is unsupported\n", min_link_rate);
+		calc_link_rate = DP_LINK_RATE_540;
 	}
 
+	pr_debug("calc_link_rate=0x%x, Max rate supported by sink=0x%x\n",
+		dp->link_rate, dp->dpcd.max_link_rate);
+	if (calc_link_rate > dp->dpcd.max_link_rate)
+		calc_link_rate = dp->dpcd.max_link_rate;
+	pr_debug("calc_link_rate = 0x%x\n", calc_link_rate);
 	return calc_link_rate;
 }
 
@@ -707,7 +761,8 @@ static int dp_aux_chan_ready(struct mdss_dp_drv_pdata *ep)
 
 	for (cnt = 5; cnt; cnt--) {
 		ret = dp_aux_write_buf(ep, EDID_START_ADDRESS, &data, 1, 1);
-		pr_debug("ret=%d\n", ret);
+		pr_debug("ret = %d, aux_error = %s\n",
+				ret, mdss_dp_get_aux_error(ep->aux_error_num));
 		if (ret >= 0)
 			break;
 		msleep(100);
@@ -721,13 +776,77 @@ static int dp_aux_chan_ready(struct mdss_dp_drv_pdata *ep)
 	return 0;
 }
 
+static void dp_aux_send_checksum(struct mdss_dp_drv_pdata *dp, u32 checksum)
+{
+	char data[4];
+
+	data[0] = checksum;
+	pr_debug("writing checksum %d\n", data[0]);
+	dp_aux_write_buf(dp, 0x261, data, 1, 0);
+
+	data[0] = TEST_EDID_CHECKSUM_WRITE;
+	pr_debug("sending test response %s\n",
+			mdss_dp_get_test_response(data[0]));
+	dp_aux_write_buf(dp, 0x260, data, 1, 0);
+}
+
+int mdss_dp_aux_read_edid(struct mdss_dp_drv_pdata *dp,
+	u8 *buf, int size, int blk_num)
+{
+	int rc, max_size_bytes = 16, read_size;
+	int ret = 0;
+	u8 offset_lut[] = {0x0, 0x80};
+	u8 offset;
+
+	/*
+	 * Calculate the offset of the desired EDID block to be read.
+	 * For even blocks, offset starts at 0x0
+	 * For odd blocks, offset starts at 0x80
+	 */
+	if (blk_num % 2)
+		offset = offset_lut[1];
+	else
+		offset = offset_lut[0];
+
+	do {
+		struct edp_cmd cmd = {0};
+
+		read_size = min(size, max_size_bytes);
+		cmd.read = 1;
+		cmd.addr = EDID_START_ADDRESS;
+		cmd.len = read_size;
+		cmd.out_buf = buf;
+		cmd.i2c = 1;
+
+		/* Write the offset first prior to reading the data */
+		pr_debug("offset=0x%x, size=%d\n", offset, size);
+		dp_aux_write_buf(dp, EDID_START_ADDRESS, &offset, 1, 1);
+		rc = dp_aux_read(dp, &cmd);
+		if (rc < 0) {
+			pr_err("aux read failed\n");
+			return rc;
+		}
+#ifndef CONFIG_SEC_DISPLAYPORT
+		print_hex_dump(KERN_DEBUG, "DP:EDID: ", DUMP_PREFIX_NONE, 16, 1,
+				buf, read_size, false);
+#endif
+		buf += read_size;
+		offset += read_size;
+		size -= read_size;
+		ret += read_size;
+	} while (size > 0);
+
+	return ret;
+}
+
 int mdss_dp_edid_read(struct mdss_dp_drv_pdata *dp)
 {
-	struct edp_buf *rp = &dp->rxp;
 	int rlen, ret = 0;
 	int edid_blk = 0, blk_num = 0, retries = 10;
 	bool edid_parsing_done = false;
 	const u8 cea_tag = 0x02;
+	u32 const segment_addr = 0x30;
+	u32 checksum = 0;
 
 	ret = dp_aux_chan_ready(dp);
 	if (ret) {
@@ -735,59 +854,211 @@ int mdss_dp_edid_read(struct mdss_dp_drv_pdata *dp)
 		return ret;
 	}
 
-	do {
-		rlen = dp_aux_read_buf(dp, EDID_START_ADDRESS +
-				(blk_num * EDID_BLOCK_SIZE),
-				EDID_BLOCK_SIZE, 1);
+	memset(dp->edid_buf, 0, dp->edid_buf_size);
+	/**
+	 * Parse the test request vector to see whether there is a
+	 * TEST_EDID_READ test request.
+	 */
+	dp_sink_parse_test_request(dp);
+
+#ifndef CONFIG_SEC_DISPLAYPORT
+	while (retries) {
+#else
+	while (retries && dp->cable_connected_phy) {
+#endif
+		u8 segment;
+		u8 edid_buf[EDID_BLOCK_SIZE] = {0};
+
+		/*
+		 * Write the segment first.
+		 * Segment = 0, for blocks 0 and 1
+		 * Segment = 1, for blocks 1 and 2
+		 * Segment = 2, for blocks 3 and 4
+		 * and so on ...
+		 */
+		segment = blk_num >> 1;
+		dp_aux_write_buf(dp, segment_addr, &segment, 1, 0);
+
+		rlen = mdss_dp_aux_read_edid(dp, edid_buf, EDID_BLOCK_SIZE,
+			blk_num);
 		if (rlen != EDID_BLOCK_SIZE) {
-			pr_err("Read failed. rlen=%d\n", rlen);
+			pr_err("Read failed. rlen=%s\n",
+				mdss_dp_get_aux_error(rlen));
+			retries--;
 			continue;
 		}
-
 		pr_debug("blk_num=%d, rlen=%d\n", blk_num, rlen);
 
-		if (dp_edid_is_valid_header(rp->data)) {
-			if (dp_edid_buf_error(rp->data, rp->len))
+		print_hex_dump(KERN_DEBUG, "DP:EDID: ", DUMP_PREFIX_NONE, 16, 1,
+				edid_buf, EDID_BLOCK_SIZE, false);
+#ifdef CONFIG_SEC_DISPLAYPORT
+		ret = dp_edid_buf_error(edid_buf, rlen);
+		if (ret) {
+			pr_err("corrupt edid block detected\n");
+			retries--;
+			continue;
+		}
+#endif
+		if (dp_edid_is_valid_header(edid_buf)) {
+#ifndef CONFIG_SEC_DISPLAYPORT
+			ret = dp_edid_buf_error(edid_buf, rlen);
+			if (ret) {
+				pr_err("corrupt edid block detected\n");
+				retries--;
 				continue;
+			}
+#endif
 
 			if (edid_parsing_done) {
+				pr_debug("block 0 parsed already\n");
 				blk_num++;
+				retries--;
 				continue;
 			}
 
-			dp_extract_edid_manufacturer(&dp->edid, rp->data);
-			dp_extract_edid_product(&dp->edid, rp->data);
-			dp_extract_edid_version(&dp->edid, rp->data);
-			dp_extract_edid_ext_block_cnt(&dp->edid, rp->data);
-			dp_extract_edid_video_support(&dp->edid, rp->data);
-			dp_extract_edid_feature(&dp->edid, rp->data);
+			dp_extract_edid_manufacturer(&dp->edid, edid_buf);
+			dp_extract_edid_product(&dp->edid, edid_buf);
+			dp_extract_edid_version(&dp->edid, edid_buf);
+			dp_extract_edid_ext_block_cnt(&dp->edid, edid_buf);
+			dp_extract_edid_video_support(&dp->edid, edid_buf);
+			dp_extract_edid_feature(&dp->edid, edid_buf);
 			dp_extract_edid_detailed_timing_description(&dp->edid,
-				rp->data);
-
+				edid_buf);
+#ifdef CONFIG_SEC_DISPLAYPORT
+			blk_num++;
+#endif
 			edid_parsing_done = true;
+		} else if (!edid_parsing_done) {
+			pr_debug("Invalid edid block 0 header\n");
+			retries--;
+			continue;
 		} else {
 			edid_blk++;
 			blk_num++;
 
 			/* fix dongle byte shift issue */
-			if (edid_blk == 1 && rp->data[0] != cea_tag) {
+			if (edid_blk == 1 && edid_buf[0] != cea_tag) {
 				u8 tmp[EDID_BLOCK_SIZE - 1];
 
-				memcpy(tmp, rp->data, EDID_BLOCK_SIZE - 1);
-				rp->data[0] = cea_tag;
-				memcpy(rp->data + 1, tmp, EDID_BLOCK_SIZE - 1);
+				memcpy(tmp, edid_buf, EDID_BLOCK_SIZE - 1);
+				edid_buf[0] = cea_tag;
+				memcpy(edid_buf + 1, tmp, EDID_BLOCK_SIZE - 1);
 			}
 		}
 
 		memcpy(dp->edid_buf + (edid_blk * EDID_BLOCK_SIZE),
-			rp->data, EDID_BLOCK_SIZE);
+			edid_buf, EDID_BLOCK_SIZE);
 
-		if (edid_blk == dp->edid.ext_block_cnt)
-			return 0;
-	} while (retries--);
+		checksum = edid_buf[rlen - 1];
+
+		/* break if no more extension blocks present */
+		pr_err("ext_block_cnt=%d\n", dp->edid.ext_block_cnt);
+		if (edid_blk >= dp->edid.ext_block_cnt)
+			break;
+	};
+
+	if (dp->test_data.test_requested == TEST_EDID_READ) {
+		pr_debug("sending checksum %d\n", checksum);
+		dp_aux_send_checksum(dp, checksum);
+		dp->test_data = (const struct dpcd_test_request){ 0 };
+#ifdef CONFIG_SEC_DISPLAYPORT
+		dp->aux_status = -EINVAL;
+#endif
+	}
+
+#ifdef CONFIG_SEC_DISPLAYPORT
+	if (!edid_parsing_done)
+		return -EINVAL;
+#endif
+
+	return ret;
+}
+
+#ifdef CONFIG_SEC_DISPLAYPORT
+static int secdp_read_branch_revision(struct mdss_dp_drv_pdata *ep)
+{
+	char *bp;
+	struct edp_buf *rp;
+
+	int rlen = 0;
+
+	rlen = dp_aux_read_buf(ep, DPCD_BRANCH_HW_REVISION, 3, 0);
+	if (rlen < 3) {
+		pr_err("branch revision read fail(%d)\n", rlen);
+		goto exit;
+	}
+
+	rp = &ep->rxp;
+	bp = rp->data;
+
+	ep->dex_fw_ver[0] = *bp++;
+	ep->dex_fw_ver[1] = *bp++;
+	ep->dex_fw_ver[2] = *bp++;
+	pr_info("branch revision: HW(0x%X), SW(0x%X, 0x%X)\n",
+		ep->dex_fw_ver[0], ep->dex_fw_ver[1], ep->dex_fw_ver[2]);
+
+exit:
+	return rlen;
+}
+
+static void secdp_recovery_aux(struct mdss_dp_drv_pdata *dp) {
+#ifdef SECDP_AUX_RETRY
+	int old_value, new_value;
+	if (!dp->cable_connected)
+		return;
+
+	old_value = dp->aux_tuning_value[dp->aux_tuning_index];
+	dp->aux_tuning_index++;
+	dp->aux_tuning_index %= 4;
+	new_value = dp->aux_tuning_value[dp->aux_tuning_index];
+#else
+	mdss_dp_aux_init(dp);
+	mdss_dp_phy_initialize(dp);
+	mdss_dp_ctrl_reset(&dp->ctrl_io);
+	mdss_dp_phy_reset(&dp->ctrl_io);
+#endif
+	mdss_dp_aux_reset(&dp->ctrl_io);
+	mdss_dp_aux_ctrl(&dp->ctrl_io, true);
+	mdss_dp_phy_aux_setup(&dp->phy_io);
+	pr_info("Recovery aux!\n");
+
+#ifdef SECDP_AUX_RETRY
+	pr_info("change AUX_CFG1 config from 0x%02x to 0x%02x!\n",
+					old_value, new_value);
+#endif
+}
+
+int secdp_check_aux_status(struct mdss_dp_drv_pdata *dp) {
+	int rlen;
+	char data;
+
+	rlen = dp_aux_read_buf(dp, 1, 1, 0);
+	if (rlen <= 0)
+		goto aux_error;
+
+	data = *(dp->rxp.data);
+	pr_info("link rate : %d\n", data);
+	if (data > DP_LINK_RATE_540)
+		data = DP_LINK_RATE_540;
+	if (!mdss_dp_aux_is_link_rate_valid(data))
+		goto aux_error;
+
+	rlen = dp_aux_read_buf(dp, 2, 1, 0);
+	if (rlen <= 0)
+		goto aux_error;
+
+	data = (*(dp->rxp.data)) & 0x0f;
+	pr_info("lane count : %d\n", data);
+	if (!mdss_dp_aux_is_lane_count_valid(data))
+		goto aux_error;
 
 	return 0;
+
+aux_error:
+	pr_err("aux read failed\n");
+	return -EINVAL;
 }
+#endif
 
 static void dp_sink_capability_read(struct mdss_dp_drv_pdata *ep,
 				int len)
@@ -798,11 +1069,34 @@ static void dp_sink_capability_read(struct mdss_dp_drv_pdata *ep,
 	struct edp_buf *rp;
 	int rlen;
 
+#ifndef CONFIG_SEC_DISPLAYPORT
 	rlen = dp_aux_read_buf(ep, 0, len, 0);
 	if (rlen <= 0) {
 		pr_err("edp aux read failed\n");
 		return;
 	}
+#else
+	ep->aux_status = 0;
+{
+#define MAX_CAP_READ_TRIAL	5
+	int i;
+	for (i = 0; i < MAX_CAP_READ_TRIAL; i++) {
+		rlen = dp_aux_read_buf(ep, 0, len, 0);
+		if (rlen > 0)
+			break;
+		msleep(10);
+#ifndef SECDP_AUX_RETRY
+		secdp_recovery_aux(ep);
+#endif
+	}
+	pr_info("retry count: %d\n", i);
+	if (i == MAX_CAP_READ_TRIAL) {
+		pr_err("edp aux read failed\n");
+		ep->aux_status = -EINVAL;
+		return;
+	}
+}
+#endif
 	rp = &ep->rxp;
 	cap = &ep->dpcd;
 	bp = rp->data;
@@ -822,6 +1116,10 @@ static void dp_sink_capability_read(struct mdss_dp_drv_pdata *ep,
 	if (--rlen <= 0)
 		return;
 	pr_debug("link_rate=%d\n", cap->max_link_rate);
+#ifdef CONFIG_SEC_DISPLAYPORT
+	if (cap->max_link_rate > DP_LINK_RATE_540)
+		cap->max_link_rate = DP_LINK_RATE_540;
+#endif
 
 	data = *bp++; /* byte 2 */
 	if (data & BIT(7))
@@ -841,10 +1139,12 @@ static void dp_sink_capability_read(struct mdss_dp_drv_pdata *ep,
 	pr_debug("lane_count=%d\n", cap->max_lane_count);
 
 	data = *bp++; /* byte 3 */
+#ifndef SECDP_PHY_TEST
 	if (data & BIT(0)) {
 		cap->flags |= DPCD_MAX_DOWNSPREAD_0_5;
 		pr_debug("max_downspread\n");
 	}
+#endif
 
 	if (data & BIT(6)) {
 		cap->flags |= DPCD_NO_AUX_HANDSHAKE;
@@ -855,7 +1155,7 @@ static void dp_sink_capability_read(struct mdss_dp_drv_pdata *ep,
 
 	data = *bp++; /* byte 4 */
 	cap->num_rx_port = (data & BIT(0)) + 1;
-	pr_debug("rx_ports=%d", cap->num_rx_port);
+	pr_debug("rx_ports=%d\n", cap->num_rx_port);
 	if (--rlen <= 0)
 		return;
 
@@ -911,7 +1211,7 @@ static void dp_sink_capability_read(struct mdss_dp_drv_pdata *ep,
 	data = *bp++;	/* byte 12 */
 	cap->i2c_speed_ctrl = data;
 	if (cap->i2c_speed_ctrl > 0)
-		pr_debug("i2c_rate=%d", cap->i2c_speed_ctrl);
+		pr_debug("i2c_rate=%d\n", cap->i2c_speed_ctrl);
 	if (--rlen <= 0)
 		return;
 
@@ -935,9 +1235,11 @@ static void dp_sink_capability_read(struct mdss_dp_drv_pdata *ep,
 		cap->training_read_interval = 4000 * data; /* us */
 	pr_debug("training_interval=%d\n",
 			 cap->training_read_interval);
+
+	dp_sink_parse_sink_count(ep);
 }
 
-static int dp_link_status_read(struct mdss_dp_drv_pdata *ep, int len)
+int mdss_dp_aux_link_status_read(struct mdss_dp_drv_pdata *ep, int len)
 {
 	char *bp;
 	char data;
@@ -945,7 +1247,7 @@ static int dp_link_status_read(struct mdss_dp_drv_pdata *ep, int len)
 	struct edp_buf *rp;
 	int rlen;
 
-	pr_debug("len=%d", len);
+	pr_debug("len=%d\n", len);
 	/* skip byte 0x200 and 0x201 */
 	rlen = dp_aux_read_buf(ep, 0x202, len, 0);
 	if (rlen < len) {
@@ -992,6 +1294,51 @@ static int dp_link_status_read(struct mdss_dp_drv_pdata *ep, int len)
 	return len;
 }
 
+/*
+ * mdss_dp_aux_send_psm_request() - sends a power save mode messge to sink
+ * @dp: Display Port Driver data
+ */
+int mdss_dp_aux_send_psm_request(struct mdss_dp_drv_pdata *dp, bool enable)
+{
+	u8 psm_request[4];
+	int rc = 0;
+
+	psm_request[0] = enable ? 2 : 1;
+
+	pr_debug("sending psm %s request\n", enable ? "entry" : "exit");
+	if (enable) {
+		dp_aux_write_buf(dp, 0x600, psm_request, 1, 0);
+	} else {
+		ktime_t timeout = ktime_add_ms(ktime_get(), 20);
+
+		/*
+		 * It could take up to 1ms (20 ms of embedded sinks) till
+		 * the sink is ready to reply to this AUX transaction. It is
+		 * expected that the source keep retrying periodically during
+		 * this time.
+		 */
+		for (;;) {
+			rc = dp_aux_write_buf(dp, 0x600, psm_request, 1, 0);
+			if ((rc >= 0) ||
+				(ktime_compare(ktime_get(), timeout) > 0))
+				break;
+			usleep_range(100, 120);
+		}
+
+		/*
+		 * if the aux transmission succeeded, then the function would
+		 * return the number of bytes transmitted.
+		 */
+		if (rc > 0)
+			rc = 0;
+	}
+
+	if (!rc)
+		dp->psm_enabled = enable;
+
+	return rc;
+}
+
 /**
  * mdss_dp_aux_send_test_response() - sends a test response to the sink
  * @dp: Display Port Driver data
@@ -1008,12 +1355,12 @@ void mdss_dp_aux_send_test_response(struct mdss_dp_drv_pdata *dp)
 }
 
 /**
- * dp_is_link_rate_valid() - validates the link rate
+ * mdss_dp_aux_is_link_rate_valid() - validates the link rate
  * @lane_rate: link rate requested by the sink
  *
  * Returns true if the requested link rate is supported.
  */
-static bool dp_is_link_rate_valid(u32 link_rate)
+bool mdss_dp_aux_is_link_rate_valid(u32 link_rate)
 {
 	return (link_rate == DP_LINK_RATE_162) ||
 		(link_rate == DP_LINK_RATE_270) ||
@@ -1021,16 +1368,94 @@ static bool dp_is_link_rate_valid(u32 link_rate)
 }
 
 /**
- * dp_is_lane_count_valid() - validates the lane count
+ * mdss_dp_aux_is_lane_count_valid() - validates the lane count
  * @lane_count: lane count requested by the sink
  *
  * Returns true if the requested lane count is supported.
  */
-static bool dp_is_lane_count_valid(u32 lane_count)
+bool mdss_dp_aux_is_lane_count_valid(u32 lane_count)
 {
 	return (lane_count == DP_LANE_COUNT_1) ||
 		(lane_count == DP_LANE_COUNT_2) ||
 		(lane_count == DP_LANE_COUNT_4);
+}
+
+int mdss_dp_aux_parse_vx_px(struct mdss_dp_drv_pdata *ep)
+{
+	char *bp;
+	char data;
+	struct edp_buf *rp;
+	int rlen;
+	int const param_len = 0x1;
+	int const addr1 = 0x206;
+	int const addr2 = 0x207;
+	int ret = 0;
+	u32 v0, p0, v1, p1, v2, p2, v3, p3;
+
+	pr_info("Parsing DPCP for updated voltage and pre-emphasis levels\n");
+
+	rlen = dp_aux_read_buf(ep, addr1, param_len, 0);
+	if (rlen < param_len) {
+		pr_err("failed reading lanes 0/1\n");
+		ret = -EINVAL;
+		goto end;
+	}
+
+	rp = &ep->rxp;
+	bp = rp->data;
+	data = *bp++;
+
+	pr_info("lanes 0/1 (Byte 0x206): 0x%x\n", data);
+
+	v0 = data & 0x3;
+	data = data >> 2;
+	p0 = data & 0x3;
+	data = data >> 2;
+
+	v1 = data & 0x3;
+	data = data >> 2;
+	p1 = data & 0x3;
+	data = data >> 2;
+
+	rlen = dp_aux_read_buf(ep, addr2, param_len, 0);
+	if (rlen < param_len) {
+		pr_err("failed reading lanes 2/3\n");
+		ret = -EINVAL;
+		goto end;
+	}
+
+	rp = &ep->rxp;
+	bp = rp->data;
+	data = *bp++;
+
+	pr_info("lanes 2/3 (Byte 0x207): 0x%x\n", data);
+
+	v2 = data & 0x3;
+	data = data >> 2;
+	p2 = data & 0x3;
+	data = data >> 2;
+
+	v3 = data & 0x3;
+	data = data >> 2;
+	p3 = data & 0x3;
+	data = data >> 2;
+
+	pr_info("vx: 0=%d, 1=%d, 2=%d, 3=%d\n", v0, v1, v2, v3);
+	pr_info("px: 0=%d, 1=%d, 2=%d, 3=%d\n", p0, p1, p2, p3);
+
+	/**
+	 * Update the voltage and pre-emphasis levels as per DPCD request
+	 * vector.
+	 */
+	pr_info("Current: v_level = 0x%x, p_level = 0x%x\n",
+			ep->v_level, ep->p_level);
+	pr_info("Requested: v_level = 0x%x, p_level = 0x%x\n", v0, p0);
+	ep->v_level = v0;
+	ep->p_level = p0;
+
+	pr_info("Success\n");
+end:
+	return ret;
 }
 
 /**
@@ -1063,7 +1488,7 @@ static int dp_parse_link_training_params(struct mdss_dp_drv_pdata *ep)
 	bp = rp->data;
 	data = *bp++;
 
-	if (!dp_is_link_rate_valid(data)) {
+	if (!mdss_dp_aux_is_link_rate_valid(data)) {
 		pr_err("invalid link rate = 0x%x\n", data);
 		ret = -EINVAL;
 		goto exit;
@@ -1085,7 +1510,7 @@ static int dp_parse_link_training_params(struct mdss_dp_drv_pdata *ep)
 	data = *bp++;
 	data &= 0x1F;
 
-	if (!dp_is_lane_count_valid(data)) {
+	if (!mdss_dp_aux_is_lane_count_valid(data)) {
 		pr_err("invalid lane count = 0x%x\n", data);
 		ret = -EINVAL;
 		goto exit;
@@ -1133,6 +1558,527 @@ static void dp_sink_parse_sink_count(struct mdss_dp_drv_pdata *ep)
 			ep->sink_count.count, ep->sink_count.cp_ready);
 }
 
+static int dp_get_test_period(struct mdss_dp_drv_pdata *ep, int const addr)
+{
+	int ret = 0;
+	char *bp;
+	char data;
+	struct edp_buf *rp;
+	int rlen;
+	int const test_parameter_len = 0x1;
+	int const max_audio_period = 0xA;
+
+	/* TEST_AUDIO_PERIOD_CH_XX */
+	rlen = dp_aux_read_buf(ep, addr, test_parameter_len, 0);
+	if (rlen < test_parameter_len) {
+		pr_err("failed to read test_audio_period (0x%x)\n", addr);
+		ret = -EINVAL;
+		goto exit;
+	}
+	rp = &ep->rxp;
+	bp = rp->data;
+	data = *bp++;
+
+	/* Period - Bits 3:0 */
+	data = data & 0xF;
+	if ((int)data > max_audio_period) {
+		pr_err("invalid test_audio_period_ch_1 = 0x%x\n", data);
+		ret = -EINVAL;
+		goto exit;
+	}
+
+	ret = data;
+
+exit:
+	return ret;
+}
+
+static int dp_parse_audio_channel_test_period(struct mdss_dp_drv_pdata *ep)
+{
+	int ret = 0;
+	int const test_audio_period_ch_1_addr = 0x273;
+	int const test_audio_period_ch_2_addr = 0x274;
+	int const test_audio_period_ch_3_addr = 0x275;
+	int const test_audio_period_ch_4_addr = 0x276;
+	int const test_audio_period_ch_5_addr = 0x277;
+	int const test_audio_period_ch_6_addr = 0x278;
+	int const test_audio_period_ch_7_addr = 0x279;
+	int const test_audio_period_ch_8_addr = 0x27A;
+
+	/* TEST_AUDIO_PERIOD_CH_1 (Byte 0x273) */
+	ret = dp_get_test_period(ep, test_audio_period_ch_1_addr);
+	if (ret == -EINVAL)
+		goto exit;
+
+	ep->test_data.test_audio_period_ch_1 = ret;
+	pr_debug("test_audio_period_ch_1 = 0x%x\n", ret);
+
+	/* TEST_AUDIO_PERIOD_CH_2 (Byte 0x274) */
+	ret = dp_get_test_period(ep, test_audio_period_ch_2_addr);
+	if (ret == -EINVAL)
+		goto exit;
+
+	ep->test_data.test_audio_period_ch_2 = ret;
+	pr_debug("test_audio_period_ch_2 = 0x%x\n", ret);
+
+	/* TEST_AUDIO_PERIOD_CH_3 (Byte 0x275) */
+	ret = dp_get_test_period(ep, test_audio_period_ch_3_addr);
+	if (ret == -EINVAL)
+		goto exit;
+
+	ep->test_data.test_audio_period_ch_3 = ret;
+	pr_debug("test_audio_period_ch_3 = 0x%x\n", ret);
+
+	/* TEST_AUDIO_PERIOD_CH_4 (Byte 0x276) */
+	ret = dp_get_test_period(ep, test_audio_period_ch_4_addr);
+	if (ret == -EINVAL)
+		goto exit;
+
+	ep->test_data.test_audio_period_ch_4 = ret;
+	pr_debug("test_audio_period_ch_4 = 0x%x\n", ret);
+
+	/* TEST_AUDIO_PERIOD_CH_5 (Byte 0x277) */
+	ret = dp_get_test_period(ep, test_audio_period_ch_5_addr);
+	if (ret == -EINVAL)
+		goto exit;
+
+	ep->test_data.test_audio_period_ch_5 = ret;
+	pr_debug("test_audio_period_ch_5 = 0x%x\n", ret);
+
+	/* TEST_AUDIO_PERIOD_CH_6 (Byte 0x278) */
+	ret = dp_get_test_period(ep, test_audio_period_ch_6_addr);
+	if (ret == -EINVAL)
+		goto exit;
+
+	ep->test_data.test_audio_period_ch_6 = ret;
+	pr_debug("test_audio_period_ch_6 = 0x%x\n", ret);
+
+	/* TEST_AUDIO_PERIOD_CH_7 (Byte 0x279) */
+	ret = dp_get_test_period(ep, test_audio_period_ch_7_addr);
+	if (ret == -EINVAL)
+		goto exit;
+
+	ep->test_data.test_audio_period_ch_7 = ret;
+	pr_debug("test_audio_period_ch_7 = 0x%x\n", ret);
+
+	/* TEST_AUDIO_PERIOD_CH_8 (Byte 0x27A) */
+	ret = dp_get_test_period(ep, test_audio_period_ch_8_addr);
+	if (ret == -EINVAL)
+		goto exit;
+
+	ep->test_data.test_audio_period_ch_8 = ret;
+	pr_debug("test_audio_period_ch_8 = 0x%x\n", ret);
+
+
+exit:
+	return ret;
+}
+
+static int dp_parse_audio_pattern_type(struct mdss_dp_drv_pdata *ep)
+{
+	int ret = 0;
+	char *bp;
+	char data;
+	struct edp_buf *rp;
+	int rlen;
+	int const test_parameter_len = 0x1;
+	int const test_audio_pattern_type_addr = 0x272;
+	int const max_audio_pattern_type = 0x1;
+
+	/* Read the requested audio pattern type (Byte 0x272). */
+	rlen = dp_aux_read_buf(ep, test_audio_pattern_type_addr,
+			test_parameter_len, 0);
+	if (rlen < test_parameter_len) {
+		pr_err("failed to read test audio mode data\n");
+		ret = -EINVAL;
+		goto exit;
+	}
+	rp = &ep->rxp;
+	bp = rp->data;
+	data = *bp++;
+
+	/* Audio Pattern Type - Bits 7:0 */
+	if ((int)data > max_audio_pattern_type) {
+		pr_err("invalid audio pattern type = 0x%x\n", data);
+		ret = -EINVAL;
+		goto exit;
+	}
+
+	ep->test_data.test_audio_pattern_type = data;
+	pr_debug("audio pattern type = %s\n",
+			mdss_dp_get_audio_test_pattern(data));
+
+exit:
+	return ret;
+}
+
+static int dp_parse_audio_mode(struct mdss_dp_drv_pdata *ep)
+{
+	int ret = 0;
+	char *bp;
+	char data;
+	struct edp_buf *rp;
+	int rlen;
+	int const test_parameter_len = 0x1;
+	int const test_audio_mode_addr = 0x271;
+	int const max_audio_sampling_rate = 0x6;
+	int const max_audio_channel_count = 0x8;
+	int sampling_rate = 0x0;
+	int channel_count = 0x0;
+
+	/* Read the requested audio mode (Byte 0x271). */
+	rlen = dp_aux_read_buf(ep, test_audio_mode_addr,
+			test_parameter_len, 0);
+	if (rlen < test_parameter_len) {
+		pr_err("failed to read test audio mode data\n");
+		ret = -EINVAL;
+		goto exit;
+	}
+	rp = &ep->rxp;
+	bp = rp->data;
+	data = *bp++;
+
+	/* Sampling Rate - Bits 3:0 */
+	sampling_rate = data & 0xF;
+	if (sampling_rate > max_audio_sampling_rate) {
+		pr_err("sampling rate (0x%x) greater than max (0x%x)\n",
+				sampling_rate, max_audio_sampling_rate);
+		ret = -EINVAL;
+		goto exit;
+	}
+
+	/* Channel Count - Bits 7:4 */
+	channel_count = ((data & 0xF0) >> 4) + 1;
+	if (channel_count > max_audio_channel_count) {
+		pr_err("channel_count (0x%x) greater than max (0x%x)\n",
+				channel_count, max_audio_channel_count);
+		ret = -EINVAL;
+		goto exit;
+	}
+
+	ep->test_data.test_audio_sampling_rate = sampling_rate;
+	ep->test_data.test_audio_channel_count = channel_count;
+	pr_debug("sampling_rate = %s, channel_count = 0x%x\n",
+		mdss_dp_get_audio_sample_rate(sampling_rate), channel_count);
+
+exit:
+	return ret;
+}
+
+/**
+ * dp_parse_audio_pattern_params() - parses audio pattern parameters from DPCD
+ * @ep: Display Port Driver data
+ *
+ * Returns 0 if it successfully parses the audio test pattern parameters.
+ */
+static int dp_parse_audio_pattern_params(struct mdss_dp_drv_pdata *ep)
+{
+	int ret = 0;
+
+	ret = dp_parse_audio_mode(ep);
+	if (ret)
+		goto exit;
+
+	ret = dp_parse_audio_pattern_type(ep);
+	if (ret)
+		goto exit;
+
+	ret = dp_parse_audio_channel_test_period(ep);
+
+exit:
+	return ret;
+}
+/**
+ * dp_parse_phy_test_params() - parses the phy test parameters
+ * @ep: Display Port Driver data
+ *
+ * Parses the DPCD (Byte 0x248) for the DP PHY test pattern that is being
+ * requested.
+ */
+static int dp_parse_phy_test_params(struct mdss_dp_drv_pdata *ep)
+{
+	char *bp;
+	char data;
+	struct edp_buf *rp;
+	int rlen;
+	int const param_len = 0x1;
+	int const phy_test_pattern_addr = 0x248;
+	int ret = 0;
+
+	rlen = dp_aux_read_buf(ep, phy_test_pattern_addr, param_len, 0);
+	if (rlen < param_len) {
+		pr_err("failed to read phy test pattern\n");
+		ret = -EINVAL;
+		goto end;
+	}
+
+	rp = &ep->rxp;
+	bp = rp->data;
+	data = *bp++;
+
+	ep->test_data.phy_test_pattern_sel = data;
+
+	pr_debug("phy_test_pattern_sel = %s\n",
+			mdss_dp_get_phy_test_pattern(data));
+
+	if (!mdss_dp_is_phy_test_pattern_supported(data))
+		ret = -EINVAL;
+
+end:
+	return ret;
+}
+
+static int dp_parse_test_timing_params1(struct mdss_dp_drv_pdata *ep,
+	int const addr, int const len, u32 *val)
+{
+	char *bp;
+	struct edp_buf *rp;
+	int rlen;
+
+	if (len < 2)
+		return -EINVAL;
+
+	/* Read the requested video test pattern (Byte 0x221). */
+	rlen = dp_aux_read_buf(ep, addr, len, 0);
+	if (rlen < len) {
+		pr_err("failed to read 0x%x\n", addr);
+		return -EINVAL;
+	}
+	rp = &ep->rxp;
+	bp = rp->data;
+
+	*val = bp[1] | (bp[0] << 8);
+
+	return 0;
+}
+
+static int dp_parse_test_timing_params2(struct mdss_dp_drv_pdata *ep,
+	int const addr, int const len, u32 *val1, u32 *val2)
+{
+	char *bp;
+	struct edp_buf *rp;
+	int rlen;
+
+	if (len < 2)
+		return -EINVAL;
+
+	/* Read the requested video test pattern (Byte 0x221). */
+	rlen = dp_aux_read_buf(ep, addr, len, 0);
+	if (rlen < len) {
+		pr_err("failed to read 0x%x\n", addr);
+		return -EINVAL;
+	}
+	rp = &ep->rxp;
+	bp = rp->data;
+
+	*val1 = (bp[0] & BIT(7)) >> 7;
+	*val2 = bp[1] | ((bp[0] & 0x7F) << 8);
+
+	return 0;
+}
+
+static int dp_parse_test_timing_params3(struct mdss_dp_drv_pdata *ep,
+	int const addr, u32 *val)
+{
+	char *bp;
+	struct edp_buf *rp;
+	int rlen;
+
+	/* Read the requested video test pattern (Byte 0x221). */
+	rlen = dp_aux_read_buf(ep, addr, 1, 0);
+	if (rlen < 1) {
+		pr_err("failed to read 0x%x\n", addr);
+		return -EINVAL;
+	}
+	rp = &ep->rxp;
+	bp = rp->data;
+	*val = bp[0];
+
+	return 0;
+}
+
+/**
+ * dp_parse_video_pattern_params() - parses video pattern parameters from DPCD
+ * @ep: Display Port Driver data
+ *
+ * Returns 0 if it successfully parses the video test pattern and the test
+ * bit depth requested by the sink and, and if the values parsed are valid.
+ */
+static int dp_parse_video_pattern_params(struct mdss_dp_drv_pdata *ep)
+{
+	int ret = 0;
+	char *bp;
+	char data;
+	struct edp_buf *rp;
+	int rlen;
+	u32 dyn_range;
+	int const test_parameter_len = 0x1;
+	int const test_video_pattern_addr = 0x221;
+	int const test_misc_addr = 0x232;
+
+	/* Read the requested video test pattern (Byte 0x221). */
+	rlen = dp_aux_read_buf(ep, test_video_pattern_addr,
+			test_parameter_len, 0);
+	if (rlen < test_parameter_len) {
+		pr_err("failed to read test video pattern\n");
+		ret = -EINVAL;
+		goto exit;
+	}
+	rp = &ep->rxp;
+	bp = rp->data;
+	data = *bp++;
+
+	if (!mdss_dp_is_test_video_pattern_valid(data)) {
+		pr_err("invalid test video pattern = 0x%x\n", data);
+		ret = -EINVAL;
+		goto exit;
+	}
+
+	ep->test_data.test_video_pattern = data;
+	pr_debug("test video pattern = 0x%x (%s)\n",
+		ep->test_data.test_video_pattern,
+		mdss_dp_test_video_pattern_to_string(
+			ep->test_data.test_video_pattern));
+
+	/* Read the requested color bit depth and dynamic range (Byte 0x232) */
+	rlen = dp_aux_read_buf(ep, test_misc_addr, test_parameter_len, 0);
+	if (rlen < test_parameter_len) {
+		pr_err("failed to read test bit depth\n");
+		ret = -EINVAL;
+		goto exit;
+	}
+	rp = &ep->rxp;
+	bp = rp->data;
+	data = *bp++;
+
+	/* Dynamic Range */
+	dyn_range = (data & BIT(3)) >> 3;
+	if (!mdss_dp_is_dynamic_range_valid(dyn_range)) {
+		pr_err("invalid test dynamic range = 0x%x", dyn_range);
+		ret = -EINVAL;
+		goto exit;
+	}
+	ep->test_data.test_dyn_range = dyn_range;
+	pr_debug("test dynamic range = 0x%x (%s)\n",
+		ep->test_data.test_dyn_range,
+		mdss_dp_dynamic_range_to_string(ep->test_data.test_dyn_range));
+
+	/* Color bit depth */
+	data &= (BIT(5) | BIT(6) | BIT(7));
+	data >>= 5;
+	if (!mdss_dp_is_test_bit_depth_valid(data)) {
+		pr_err("invalid test bit depth = 0x%x\n", data);
+		ret = -EINVAL;
+		goto exit;
+	}
+
+	ep->test_data.test_bit_depth = data;
+	pr_debug("test bit depth = 0x%x (%s)\n",
+		ep->test_data.test_bit_depth,
+		mdss_dp_test_bit_depth_to_string(ep->test_data.test_bit_depth));
+
+	/* resolution timing params */
+	ret = dp_parse_test_timing_params1(ep, 0x222, 2,
+			&ep->test_data.test_h_total);
+	if (ret) {
+		pr_err("failed to parse test_h_total (0x222)\n");
+		goto exit;
+	}
+	pr_debug("TEST_H_TOTAL = %d\n", ep->test_data.test_h_total);
+
+	ret = dp_parse_test_timing_params1(ep, 0x224, 2,
+			&ep->test_data.test_v_total);
+	if (ret) {
+		pr_err("failed to parse test_v_total (0x224)\n");
+		goto exit;
+	}
+	pr_debug("TEST_V_TOTAL = %d\n", ep->test_data.test_v_total);
+
+	ret = dp_parse_test_timing_params1(ep, 0x226, 2,
+			&ep->test_data.test_h_start);
+	if (ret) {
+		pr_err("failed to parse test_h_start (0x226)\n");
+		goto exit;
+	}
+	pr_debug("TEST_H_START = %d\n", ep->test_data.test_h_start);
+
+	ret = dp_parse_test_timing_params1(ep, 0x228, 2,
+			&ep->test_data.test_v_start);
+	if (ret) {
+		pr_err("failed to parse test_v_start (0x228)\n");
+		goto exit;
+	}
+	pr_debug("TEST_V_START = %d\n", ep->test_data.test_v_start);
+
+	ret = dp_parse_test_timing_params2(ep, 0x22A, 2,
+			&ep->test_data.test_hsync_pol,
+			&ep->test_data.test_hsync_width);
+	if (ret) {
+		pr_err("failed to parse (0x22A)\n");
+		goto exit;
+	}
+	pr_debug("TEST_HSYNC_POL = %d\n", ep->test_data.test_hsync_pol);
+	pr_debug("TEST_HSYNC_WIDTH = %d\n", ep->test_data.test_hsync_width);
+
+	ret = dp_parse_test_timing_params2(ep, 0x22C, 2,
+			&ep->test_data.test_vsync_pol,
+			&ep->test_data.test_vsync_width);
+	if (ret) {
+		pr_err("failed to parse (0x22C)\n");
+		goto exit;
+	}
+	pr_debug("TEST_VSYNC_POL = %d\n", ep->test_data.test_vsync_pol);
+	pr_debug("TEST_VSYNC_WIDTH = %d\n", ep->test_data.test_vsync_width);
+
+	ret = dp_parse_test_timing_params1(ep, 0x22E, 2,
+			&ep->test_data.test_h_width);
+	if (ret) {
+		pr_err("failed to parse test_h_width (0x22E)\n");
+		goto exit;
+	}
+	pr_debug("TEST_H_WIDTH = %d\n", ep->test_data.test_h_width);
+
+	ret = dp_parse_test_timing_params1(ep, 0x230, 2,
+			&ep->test_data.test_v_height);
+	if (ret) {
+		pr_err("failed to parse test_v_height (0x230)\n");
+		goto exit;
+	}
+	pr_debug("TEST_V_HEIGHT = %d\n", ep->test_data.test_v_height);
+
+	ret = dp_parse_test_timing_params3(ep, 0x233, &ep->test_data.test_rr_d);
+	ep->test_data.test_rr_d &= BIT(0);
+	if (ret) {
+		pr_err("failed to parse test_rr_d (0x233)\n");
+		goto exit;
+	}
+	pr_debug("TEST_REFRESH_DENOMINATOR = %d\n", ep->test_data.test_rr_d);
+
+	ret = dp_parse_test_timing_params3(ep, 0x234, &ep->test_data.test_rr_n);
+	if (ret) {
+		pr_err("failed to parse test_rr_n (0x234)\n");
+		goto exit;
+	}
+	pr_debug("TEST_REFRESH_NUMERATOR = %d\n", ep->test_data.test_rr_n);
+
+exit:
+	return ret;
+}
+
+/**
+ * mdss_dp_is_video_audio_test_requested() - checks for audio/video test request
+ * @test: test requested by the sink
+ *
+ * Returns true if the requested test is a permitted audio/video test.
+ */
+static bool mdss_dp_is_video_audio_test_requested(u32 test)
+{
+	return (test == TEST_VIDEO_PATTERN) ||
+		(test == (TEST_AUDIO_PATTERN | TEST_VIDEO_PATTERN)) ||
+		(test == TEST_AUDIO_PATTERN) ||
+		(test == (TEST_AUDIO_PATTERN | TEST_AUDIO_DISABLED_VIDEO));
+}
+
 /**
  * dp_is_test_supported() - checks if test requested by sink is supported
  * @test_requested: test requested by the sink
@@ -1141,7 +2087,10 @@ static void dp_sink_parse_sink_count(struct mdss_dp_drv_pdata *ep)
  */
 static bool dp_is_test_supported(u32 test_requested)
 {
-	return test_requested == TEST_LINK_TRAINING;
+	return (test_requested == TEST_LINK_TRAINING) ||
+		(test_requested == TEST_EDID_READ) ||
+		(test_requested == PHY_TEST_PATTERN) ||
+		mdss_dp_is_video_audio_test_requested(test_requested);
 }
 
 /**
@@ -1161,6 +2110,7 @@ static void dp_sink_parse_test_request(struct mdss_dp_drv_pdata *ep)
 	int const test_parameter_len = 0x1;
 	int const device_service_irq_addr = 0x201;
 	int const test_request_addr = 0x218;
+	char buf[4];
 
 	/**
 	 * Read the device service IRQ vector (Byte 0x201) to determine
@@ -1202,11 +2152,31 @@ static void dp_sink_parse_test_request(struct mdss_dp_drv_pdata *ep)
 		return;
 	}
 
-	pr_debug("%s requested\n", mdss_dp_get_test_name(data));
+	pr_debug("%s (0x%x) requested\n", mdss_dp_get_test_name(data), data);
 	ep->test_data.test_requested = data;
+
+	if (ep->test_data.test_requested == PHY_TEST_PATTERN) {
+		ret = dp_parse_phy_test_params(ep);
+		if (ret)
+			goto end;
+		
+		ret = dp_parse_link_training_params(ep);
+	}
 
 	if (ep->test_data.test_requested == TEST_LINK_TRAINING)
 		ret = dp_parse_link_training_params(ep);
+
+	if (mdss_dp_is_video_audio_test_requested(
+				ep->test_data.test_requested)) {
+		ret = dp_parse_video_pattern_params(ep);
+		if (ret)
+			goto end;
+		ret = dp_parse_audio_pattern_params(ep);
+	}
+end:
+	/* clear the test request IRQ */
+	buf[0] = 1;
+	dp_aux_write_buf(ep, test_request_addr, buf, 1, 0);
 
 	/**
 	 * Send a TEST_ACK if all test parameters are valid, otherwise send
@@ -1262,7 +2232,7 @@ static int dp_lane_set_write(struct mdss_dp_drv_pdata *ep, int voltage_level,
 	for (i = 0; i < 4; i++)
 		buf[i] = voltage_level | pre_emphasis_level | max_level_reached;
 
-	pr_debug("p|v=0x%x", voltage_level | pre_emphasis_level);
+	pr_debug("p|v=0x%x\n", voltage_level | pre_emphasis_level);
 	return dp_aux_write_buf(ep, 0x103, buf, 4, 0);
 }
 
@@ -1336,6 +2306,7 @@ bool mdss_dp_aux_channel_eq_done(struct mdss_dp_drv_pdata *ep)
 	return false;
 }
 
+#ifndef SECDP_PHY_TEST
 void dp_sink_train_set_adjust(struct mdss_dp_drv_pdata *ep)
 {
 	int i;
@@ -1344,7 +2315,7 @@ void dp_sink_train_set_adjust(struct mdss_dp_drv_pdata *ep)
 
 	/* use the max level across lanes */
 	for (i = 0; i < ep->lane_cnt; i++) {
-		pr_debug("lane=%d req_voltage_swing=%d",
+		pr_debug("lane=%d req_voltage_swing=%d\n",
 			i, ep->link_status.req_voltage_swing[i]);
 		if (max < ep->link_status.req_voltage_swing[i])
 			max = ep->link_status.req_voltage_swing[i];
@@ -1355,7 +2326,7 @@ void dp_sink_train_set_adjust(struct mdss_dp_drv_pdata *ep)
 	/* use the max level across lanes */
 	max = 0;
 	for (i = 0; i < ep->lane_cnt; i++) {
-		pr_debug("lane=%d req_pre_emphasis=%d",
+		pr_debug("lane=%d req_pre_emphasis=%d\n",
 			i, ep->link_status.req_pre_emphasis[i]);
 		if (max < ep->link_status.req_pre_emphasis[i])
 			max = ep->link_status.req_pre_emphasis[i];
@@ -1386,9 +2357,10 @@ void dp_sink_train_set_adjust(struct mdss_dp_drv_pdata *ep)
 		ep->p_level = DPCD_LINK_PRE_EMPHASIS_LEVEL_1;
 	}
 
-	pr_debug("v_level=%d, p_level=%d",
+	pr_debug("v_level=%d, p_level=%d\n",
 					ep->v_level, ep->p_level);
 }
+#endif
 
 static void dp_host_train_set(struct mdss_dp_drv_pdata *ep, int train)
 {
@@ -1415,21 +2387,22 @@ static void dp_host_train_set(struct mdss_dp_drv_pdata *ep, int train)
 }
 
 char vm_pre_emphasis[4][4] = {
-	{0x00, 0x09, 0x11, 0x0C},	/* pe0, 0 db */
-	{0x00, 0x0A, 0x10, 0xFF},	/* pe1, 3.5 db */
-	{0x00, 0x0C, 0xFF, 0xFF},	/* pe2, 6.0 db */
-	{0x00, 0xFF, 0xFF, 0xFF}	/* pe3, 9.5 db */
+	{0x00, 0x0B, 0x12, 0xFF},       /* pe0, 0 db */
+	{0x00, 0x0A, 0x12, 0xFF},       /* pe1, 3.5 db */
+	{0x00, 0x0C, 0xFF, 0xFF},       /* pe2, 6.0 db */
+	{0xFF, 0xFF, 0xFF, 0xFF}        /* pe3, 9.5 db */
 };
 
 /* voltage swing, 0.2v and 1.0v are not support */
 char vm_voltage_swing[4][4] = {
-	{0x07, 0x0f, 0x12, 0x1E}, /* sw0, 0.4v  */
+	{0x07, 0x0F, 0x14, 0xFF}, /* sw0, 0.4v  */
 	{0x11, 0x1D, 0x1F, 0xFF}, /* sw1, 0.6 v */
 	{0x18, 0x1F, 0xFF, 0xFF}, /* sw1, 0.8 v */
-	{0x1E, 0xFF, 0xFF, 0xFF}  /* sw1, 1.2 v, optional */
+	{0xFF, 0xFF, 0xFF, 0xFF}  /* sw1, 1.2 v, optional */
 };
 
-static void dp_voltage_pre_emphasise_set(struct mdss_dp_drv_pdata *dp)
+void mdss_dp_aux_update_voltage_and_pre_emphasis_lvl(
+		struct mdss_dp_drv_pdata *dp)
 {
 	u32 value0 = 0;
 	u32 value1 = 0;
@@ -1438,6 +2411,14 @@ static void dp_voltage_pre_emphasise_set(struct mdss_dp_drv_pdata *dp)
 
 	value0 = vm_voltage_swing[(int)(dp->v_level)][(int)(dp->p_level)];
 	value1 = vm_pre_emphasis[(int)(dp->v_level)][(int)(dp->p_level)];
+
+	/* program default setting first */
+	dp_write(dp->phy_io.base + QSERDES_TX0_OFFSET + TXn_TX_DRV_LVL, 0x2A);
+	dp_write(dp->phy_io.base + QSERDES_TX1_OFFSET + TXn_TX_DRV_LVL, 0x2A);
+	dp_write(dp->phy_io.base + QSERDES_TX0_OFFSET + TXn_TX_EMP_POST1_LVL,
+		0x20);
+	dp_write(dp->phy_io.base + QSERDES_TX1_OFFSET + TXn_TX_EMP_POST1_LVL,
+		0x20);
 
 	/* Enable MUX to use Cursor values from these registers */
 	value0 |= BIT(5);
@@ -1457,13 +2438,14 @@ static void dp_voltage_pre_emphasise_set(struct mdss_dp_drv_pdata *dp)
 			QSERDES_TX1_OFFSET + TXn_TX_EMP_POST1_LVL,
 			value1);
 
-		pr_debug("value0=0x%x value1=0x%x",
+		pr_debug("host PHY settings: value0=0x%x value1=0x%x",
 						value0, value1);
 		dp_lane_set_write(dp, dp->v_level, dp->p_level);
 	}
 
 }
 
+#ifndef SECDP_PHY_TEST
 static int dp_start_link_train_1(struct mdss_dp_drv_pdata *ep)
 {
 	int tries, old_v_level;
@@ -1471,12 +2453,16 @@ static int dp_start_link_train_1(struct mdss_dp_drv_pdata *ep)
 	int usleep_time;
 	int const maximum_retries = 5;
 
-	pr_debug("Entered++");
+	pr_debug("Entered++\n");
+
+	dp_write(ep->base + DP_STATE_CTRL, 0x0);
+	/* Make sure to clear the current pattern before starting a new one */
+	wmb();
 
 	dp_host_train_set(ep, 0x01); /* train_1 */
 	dp_cap_lane_rate_set(ep);
 	dp_train_pattern_set_write(ep, 0x21); /* train_1 */
-	dp_voltage_pre_emphasise_set(ep);
+	mdss_dp_aux_update_voltage_and_pre_emphasis_lvl(ep);
 
 	tries = 0;
 	old_v_level = ep->v_level;
@@ -1484,7 +2470,7 @@ static int dp_start_link_train_1(struct mdss_dp_drv_pdata *ep)
 		usleep_time = ep->dpcd.training_read_interval;
 		usleep_range(usleep_time, usleep_time);
 
-		dp_link_status_read(ep, 6);
+		mdss_dp_aux_link_status_read(ep, 6);
 		if (mdss_dp_aux_clock_recovery_done(ep)) {
 			ret = 0;
 			break;
@@ -1507,7 +2493,7 @@ static int dp_start_link_train_1(struct mdss_dp_drv_pdata *ep)
 		}
 
 		dp_sink_train_set_adjust(ep);
-		dp_voltage_pre_emphasise_set(ep);
+		mdss_dp_aux_update_voltage_and_pre_emphasis_lvl(ep);
 	}
 
 	return ret;
@@ -1521,36 +2507,36 @@ static int dp_start_link_train_2(struct mdss_dp_drv_pdata *ep)
 	char pattern;
 	int const maximum_retries = 5;
 
-	pr_debug("Entered++");
+	pr_debug("Entered++\n");
 
 	if (ep->dpcd.flags & DPCD_TPS3)
 		pattern = 0x03;
 	else
 		pattern = 0x02;
 
+	mdss_dp_aux_update_voltage_and_pre_emphasis_lvl(ep);
+	dp_host_train_set(ep, pattern);
 	dp_train_pattern_set_write(ep, pattern | 0x20);/* train_2 */
 
 	do  {
-		dp_voltage_pre_emphasise_set(ep);
-		dp_host_train_set(ep, pattern);
-
 		usleep_time = ep->dpcd.training_read_interval;
 		usleep_range(usleep_time, usleep_time);
 
-		dp_link_status_read(ep, 6);
+		mdss_dp_aux_link_status_read(ep, 6);
 
 		if (mdss_dp_aux_channel_eq_done(ep)) {
 			ret = 0;
 			break;
 		}
 
-		tries++;
 		if (tries > maximum_retries) {
 			ret = -1;
 			break;
 		}
+		tries++;
 
 		dp_sink_train_set_adjust(ep);
+		mdss_dp_aux_update_voltage_and_pre_emphasis_lvl(ep);
 	} while (1);
 
 	return ret;
@@ -1575,11 +2561,44 @@ static int dp_link_rate_down_shift(struct mdss_dp_drv_pdata *ep)
 		ret = -EINVAL;
 		break;
 	};
-
+ 
 	pr_debug("new rate=%d\n", ep->link_rate);
+ 
+	return ret;
+}
+#else
+static int dp_start_link_train_1(struct mdss_dp_drv_pdata *ep)
+{
+	int ret = 0;
+
+	pr_debug("Entered++ [PHY_TEST]\n");
+
+	dp_host_train_set(ep, 0x01); /* train_1 */
+	dp_aux_set_voltage_and_pre_emphasis_lvl(ep);
+	dp_train_pattern_set_write(ep, 0x21); /* train_1 */
 
 	return ret;
 }
+
+static int dp_start_link_train_2(struct mdss_dp_drv_pdata *ep)
+{
+	int ret = 0;
+	char pattern;
+
+	pr_debug("Entered++ [PHY_TEST]\n");
+
+	if (ep->dpcd.flags & DPCD_TPS3)
+		pattern = 0x03;
+	else
+		pattern = 0x02;
+
+	dp_host_train_set(ep, pattern); /* train_2 */
+	dp_aux_set_voltage_and_pre_emphasis_lvl(ep);
+	dp_train_pattern_set_write(ep, pattern | 0x20);/* train_2 */
+
+	return ret;
+}
+#endif
 
 int mdss_dp_aux_set_sink_power_state(struct mdss_dp_drv_pdata *ep, char state)
 {
@@ -1600,32 +2619,28 @@ static void dp_clear_training_pattern(struct mdss_dp_drv_pdata *ep)
 	usleep_range(usleep_time, usleep_time);
 }
 
+#ifndef SECDP_PHY_TEST
 int mdss_dp_link_train(struct mdss_dp_drv_pdata *dp)
 {
 	int ret = 0;
-
+#ifndef CONFIG_SEC_DISPLAYPORT
 	ret = dp_aux_chan_ready(dp);
 	if (ret) {
 		pr_err("LINK Train failed: aux chan NOT ready\n");
-		complete(&dp->train_comp);
 		return ret;
 	}
-
-	dp_write(dp->base + DP_MAINLINK_CTRL, 0x1);
-
-	mdss_dp_aux_set_sink_power_state(dp, SINK_POWER_ON);
-
+#endif
 	dp->v_level = 0; /* start from default level */
 	dp->p_level = 0;
 	mdss_dp_config_ctrl(dp);
 
 	mdss_dp_state_ctrl(&dp->ctrl_io, 0);
-	dp_clear_training_pattern(dp);
 
 	ret = dp_start_link_train_1(dp);
 	if (ret < 0) {
 		if (!dp_link_rate_down_shift(dp)) {
 			pr_debug("retry with lower rate\n");
+			dp_clear_training_pattern(dp);
 			return -EAGAIN;
 		} else {
 			pr_err("Training 1 failed\n");
@@ -1636,10 +2651,15 @@ int mdss_dp_link_train(struct mdss_dp_drv_pdata *dp)
 
 	pr_debug("Training 1 completed successfully\n");
 
+	dp_write(dp->base + DP_STATE_CTRL, 0x0);
+	/* Make sure to clear the current pattern before starting a new one */
+	wmb();
+
 	ret = dp_start_link_train_2(dp);
 	if (ret < 0) {
 		if (!dp_link_rate_down_shift(dp)) {
 			pr_debug("retry with lower rate\n");
+			dp_clear_training_pattern(dp);
 			return -EAGAIN;
 		} else {
 			pr_err("Training 2 failed\n");
@@ -1650,31 +2670,80 @@ int mdss_dp_link_train(struct mdss_dp_drv_pdata *dp)
 
 	pr_debug("Training 2 completed successfully\n");
 
+	dp_write(dp->base + DP_STATE_CTRL, 0x0);
+	/* Make sure to clear the current pattern before starting a new one */
+	wmb();
+
 clear:
 	dp_clear_training_pattern(dp);
-	if (ret != -EINVAL) {
-		mdss_dp_config_misc_settings(&dp->ctrl_io,
-				&dp->panel_data.panel_info);
+#ifdef CONFIG_SEC_DISPLAYPORT
+	dp->link_train_status = ret;
+#endif
+
+	return ret;
+}
+#else
+int mdss_dp_link_train(struct mdss_dp_drv_pdata *dp)
+{
+	int ret = 0;
+
+	/*
+	ret = dp_aux_chan_ready(dp);
+	if (ret) {
+		pr_err("LINK Train failed: aux chan NOT ready\n");
+		complete(&dp->train_comp);
+		return ret;
+	}
+	*/
+
+	dp_write(dp->base + DP_MAINLINK_CTRL, 0x1);
+
+	mdss_dp_aux_set_sink_power_state(dp, SINK_POWER_ON);
+
+	/* use 0.8V fix */
+	dp->v_level = dp->secdp_phy_param->v_level;
+	dp->p_level = dp->secdp_phy_param->p_level;
+	pr_debug("[PHY_TEST] v=%d p=%d\n", dp->v_level, dp->p_level);
+	dp_cap_lane_rate_set(dp);
+	mdss_dp_config_ctrl(dp);
+
+	mdss_dp_state_ctrl(&dp->ctrl_io, 0);
+	dp_clear_training_pattern(dp);
+	ret = dp_start_link_train_1(dp);
+	pr_debug("Training 1 completed successfully\n");
+
+	mdss_dp_state_ctrl(&dp->ctrl_io, 0);
+	dp_clear_training_pattern(dp);
+	ret = dp_start_link_train_2(dp);
+	pr_debug("Training 2 completed successfully\n");
+
+	dp_clear_training_pattern(dp);
+	if (!ret) {
 		mdss_dp_setup_tr_unit(&dp->ctrl_io, dp->link_rate,
-					dp->lane_cnt, dp->vic);
-		mdss_dp_state_ctrl(&dp->ctrl_io, ST_SEND_VIDEO);
-		pr_debug("State_ctrl set to SEND_VIDEO\n");
+					dp->lane_cnt, dp->vic,
+					&dp->panel_data.panel_info);
+		mdss_dp_state_ctrl(&dp->ctrl_io, BIT(dp->secdp_phy_param->pattern));
+		pr_debug("State_ctrl set to 0x%x\n", dp->secdp_phy_param->pattern);
 	}
 
 	complete(&dp->train_comp);
 	return ret;
 }
+#endif
 
 void mdss_dp_dpcd_cap_read(struct mdss_dp_drv_pdata *ep)
 {
 	dp_sink_capability_read(ep, 16);
+#ifdef CONFIG_SEC_DISPLAYPORT
+	secdp_read_branch_revision(ep);
+#endif
 }
 
 void mdss_dp_aux_parse_sink_status_field(struct mdss_dp_drv_pdata *ep)
 {
 	dp_sink_parse_sink_count(ep);
 	dp_sink_parse_test_request(ep);
-	dp_link_status_read(ep, 6);
+	mdss_dp_aux_link_status_read(ep, 6);
 }
 
 int mdss_dp_dpcd_status_read(struct mdss_dp_drv_pdata *ep)
@@ -1682,7 +2751,7 @@ int mdss_dp_dpcd_status_read(struct mdss_dp_drv_pdata *ep)
 	struct dpcd_link_status *sp;
 	int ret = 0; /* not sync */
 
-	ret = dp_link_status_read(ep, 6);
+	ret = mdss_dp_aux_link_status_read(ep, 6);
 
 	if (ret) {
 		sp = &ep->link_status;
@@ -1704,15 +2773,129 @@ void mdss_dp_fill_link_cfg(struct mdss_dp_drv_pdata *ep)
 
 }
 
+/**
+ * mdss_dp_aux_config_sink_frame_crc() - enable/disable per frame CRC calc
+ * @dp: Display Port Driver data
+ * @enable: true - start CRC calculation, false - stop CRC calculation
+ *
+ * Program the sink DPCD register 0x270 to start/stop CRC calculation.
+ * This would take effect with the next frame.
+ */
+int mdss_dp_aux_config_sink_frame_crc(struct mdss_dp_drv_pdata *dp,
+	bool enable)
+{
+	int rlen;
+	struct edp_buf *rp;
+	u8 *bp;
+	u8 buf[4];
+	u8 crc_supported;
+	u32 const test_sink_addr = 0x270;
+	u32 const test_sink_misc_addr = 0x246;
+
+	if (dp->sink_crc.en == enable) {
+		pr_debug("sink crc already %s\n",
+			enable ? "enabled" : "disabled");
+		return 0;
+	}
+
+	rlen = dp_aux_read_buf(dp, test_sink_misc_addr, 1, 0);
+	if (rlen < 1) {
+		pr_err("failed to TEST_SINK_ADDR\n");
+		return -EPERM;
+	}
+	rp = &dp->rxp;
+	bp = rp->data;
+	crc_supported = bp[0] & BIT(5);
+	pr_debug("crc supported=%s\n", crc_supported ? "true" : "false");
+
+	if (!crc_supported) {
+		pr_err("sink does not support CRC generation\n");
+		return -EINVAL;
+	}
+
+	buf[0] = enable ? 1 : 0;
+	dp_aux_write_buf(dp, test_sink_addr, buf, BIT(0), 0);
+
+	if (!enable)
+		mdss_dp_reset_frame_crc_data(&dp->sink_crc);
+	dp->sink_crc.en = enable;
+	pr_debug("TEST_SINK_START (CRC calculation) %s\n",
+		enable ? "enabled" : "disabled");
+
+	return 0;
+}
+
+/**
+ * mdss_dp_aux_read_sink_frame_crc() - read frame CRC values from the sink
+ * @dp: Display Port Driver data
+ */
+int mdss_dp_aux_read_sink_frame_crc(struct mdss_dp_drv_pdata *dp)
+{
+	int rlen;
+	struct edp_buf *rp;
+	u8 *bp;
+	u32 addr, len;
+	struct mdss_dp_crc_data *crc = &dp->sink_crc;
+
+	addr = 0x270; /* TEST_SINK */
+	len = 1; /* one byte */
+	rlen = dp_aux_read_buf(dp, addr, len, 0);
+	if (rlen < len) {
+		pr_err("failed to read TEST SINK\n");
+		return -EPERM;
+	}
+	rp = &dp->rxp;
+	bp = rp->data;
+	if (!(bp[0] & BIT(0))) {
+		pr_err("Sink side CRC calculation not enabled, TEST_SINK=0x%08x\n",
+			(u32)bp[0]);
+		return -EINVAL;
+	}
+
+	addr = 0x240; /* TEST_CRC_R_Cr */
+	len = 2; /* 2 bytes */
+	rlen = dp_aux_read_buf(dp, addr, len, 0);
+	if (rlen < len) {
+		pr_err("failed to read TEST_CRC_R_Cr\n");
+		return -EPERM;
+	}
+	rp = &dp->rxp;
+	bp = rp->data;
+	crc->r_cr = bp[0] | (bp[1] << 8);
+
+	addr = 0x242; /* TEST_CRC_G_Y */
+	len = 2; /* 2 bytes */
+	rlen = dp_aux_read_buf(dp, addr, len, 0);
+	if (rlen < len) {
+		pr_err("failed to read TEST_CRC_G_Y\n");
+		return -EPERM;
+	}
+	rp = &dp->rxp;
+	bp = rp->data;
+	crc->g_y = bp[0] | (bp[1] << 8);
+
+	addr = 0x244; /* TEST_CRC_B_Cb */
+	len = 2; /* 2 bytes */
+	rlen = dp_aux_read_buf(dp, addr, len, 0);
+	if (rlen < len) {
+		pr_err("failed to read TEST_CRC_B_Cb\n");
+		return -EPERM;
+	}
+	rp = &dp->rxp;
+	bp = rp->data;
+	crc->b_cb = bp[0] | (bp[1] << 8);
+
+	pr_debug("r_cr=0x%08x\t g_y=0x%08x\t b_cb=0x%08x\n",
+		crc->r_cr, crc->g_y, crc->b_cb);
+
+	return 0;
+}
+
 void mdss_dp_aux_init(struct mdss_dp_drv_pdata *ep)
 {
-	mutex_init(&ep->aux_mutex);
-	mutex_init(&ep->train_mutex);
-	init_completion(&ep->aux_comp);
-	init_completion(&ep->train_comp);
-	init_completion(&ep->idle_comp);
-	init_completion(&ep->video_comp);
-	complete(&ep->train_comp); /* make non block at first time */
+	reinit_completion(&ep->aux_comp);
+	reinit_completion(&ep->idle_comp);
+	reinit_completion(&ep->video_comp);
 	complete(&ep->video_comp); /* make non block at first time */
 
 	dp_buf_init(&ep->txp, ep->txbuf, sizeof(ep->txbuf));

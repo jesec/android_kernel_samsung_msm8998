@@ -249,13 +249,13 @@ static int amba_probe(struct device *dev)
 
 		pm_runtime_get_noresume(dev);
 		pm_runtime_set_active(dev);
-		pm_runtime_enable(dev);
 
 		ret = pcdrv->probe(pcdev, id);
-		if (ret == 0)
+		if (ret == 0){
+			pm_runtime_enable(dev);
 			break;
+		}
 
-		pm_runtime_disable(dev);
 		pm_runtime_set_suspended(dev);
 		pm_runtime_put_noidle(dev);
 

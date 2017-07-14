@@ -58,6 +58,12 @@
 #define SPMI_OWNERSHIP_TABLE_REG(N)	(0x0700 + (4 * (N)))
 #define SPMI_OWNERSHIP_PERIPH2OWNER(X)	((X) & 0x7)
 
+#ifdef CONFIG_SEC_PM
+extern int wakeup_irq_flag;
+extern char last_resume_kernel_reason[];
+extern int last_resume_kernel_reason_len;
+#endif
+
 /* Channel Status fields */
 enum pmic_arb_chnl_status {
 	PMIC_ARB_STATUS_DONE	= BIT(0),
@@ -540,6 +546,20 @@ static void periph_interrupt(struct spmi_pmic_arb *pa, u16 apid, bool show)
 		id = ffs(status) - 1;
 		status &= ~BIT(id);
 		irq = irq_find_mapping(pa->domain, HWIRQ(sid, per, id, apid));
+
+#ifdef CONFIG_SEC_PM
+		if (wakeup_irq_flag) {
+			pr_warn("Resume caused by PMIC %d, %s\n",
+				irq, irq_to_desc(irq)->action->name);
+
+			last_resume_kernel_reason_len +=
+				sprintf(last_resume_kernel_reason +
+				last_resume_kernel_reason_len,
+				"PMIC %d, %s|", irq,
+				irq_to_desc(irq)->action->name);
+		}
+#endif
+
 		if (irq == 0) {
 			cleanup_irq(pa, apid, id);
 			continue;

@@ -139,6 +139,7 @@ static int xhci_plat_probe(struct platform_device *pdev)
 	int			ret;
 	int			irq;
 
+	pr_info("%s\n", __func__);
 	if (usb_disabled())
 		return -ENODEV;
 
@@ -264,6 +265,7 @@ static int xhci_plat_probe(struct platform_device *pdev)
 	pm_runtime_mark_last_busy(&pdev->dev);
 	pm_runtime_put_autosuspend(&pdev->dev);
 
+	pr_info("%s --\n", __func__);
 	return 0;
 
 
@@ -336,7 +338,7 @@ static int xhci_plat_runtime_suspend(struct device *dev)
 
 	dev_dbg(dev, "xhci-plat runtime suspend\n");
 
-	return 0;
+	return xhci_suspend(xhci, true);
 }
 
 static int xhci_plat_runtime_resume(struct device *dev)
@@ -350,7 +352,7 @@ static int xhci_plat_runtime_resume(struct device *dev)
 
 	dev_dbg(dev, "xhci-plat runtime resume\n");
 
-	ret = 0;
+	ret = xhci_resume(xhci, false);
 	pm_runtime_mark_last_busy(dev);
 
 	return ret;

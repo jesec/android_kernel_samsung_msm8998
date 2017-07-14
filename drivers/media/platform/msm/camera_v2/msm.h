@@ -131,6 +131,7 @@ struct msm_stream *msm_get_stream(unsigned int session_id,
 	unsigned int stream_id);
 struct vb2_queue *msm_get_stream_vb2q(unsigned int session_id,
 	unsigned int stream_id);
+int msm_send_event(char *sd_name, uint32_t cmd);
 struct msm_stream *msm_get_stream_from_vb2q(struct vb2_queue *q);
 struct msm_session *msm_session_find(unsigned int session_id);
 #ifdef CONFIG_COMPAT

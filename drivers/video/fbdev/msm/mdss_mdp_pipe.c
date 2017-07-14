@@ -933,17 +933,18 @@ int mdss_mdp_smp_handoff(struct mdss_data_type *mdata)
 		data = readl_relaxed(mdata->mdp_base +
 			MDSS_MDP_REG_SMP_ALLOC_W0 + off);
 		client_id = (data >> s) & 0xFF;
-		if (test_bit(i, mdata->mmb_alloc_map)) {
-			/*
-			 * Certain pipes may have a dedicated set of
-			 * SMP MMBs statically allocated to them. In
-			 * such cases, we do not need to do anything
-			 * here.
-			 */
-			pr_debug("smp mmb %d already assigned to pipe %d (client_id %d)\n"
-				, i, pipe ? pipe->num : -1, client_id);
-			continue;
-		}
+		if (i < ARRAY_SIZE(mdata->mmb_alloc_map))
+			if (test_bit(i, mdata->mmb_alloc_map)) {
+				/*
+				 * Certain pipes may have a dedicated set of
+				 * SMP MMBs statically allocated to them. In
+				 * such cases, we do not need to do anything
+				 * here.
+				 */
+				pr_debug("smp mmb %d already assigned to pipe %d (client_id %d)\n"
+					, i, pipe ? pipe->num : -1, client_id);
+				continue;
+			}
 
 		if (client_id) {
 			if (client_id != prev_id) {
@@ -1114,6 +1115,7 @@ static void mdss_mdp_init_pipe_params(struct mdss_mdp_pipe *pipe)
 	pipe->is_right_blend = false;
 	pipe->src_split_req = false;
 	pipe->bwc_mode = 0;
+	pipe->restore_roi = false;
 
 	pipe->mfd = NULL;
 	pipe->mixer_left = pipe->mixer_right = NULL;
@@ -2267,8 +2269,10 @@ static int mdss_mdp_src_addr_setup(struct mdss_mdp_pipe *pipe,
 			&pipe->src_planes, pipe->src_fmt);
 	}
 
-	for (i = 0; i < MAX_PLANES; i++)
+	for (i = 0; i < MAX_PLANES; i++) {
 		addr[i] = src_data->p[i].addr;
+		MDSS_XLOG(src_data->p[i].addr, src_data->p[i].len);
+	}
 
 	/* planar format expects YCbCr, swap chroma planes if YCrCb */
 	if (mdata->mdp_rev < MDSS_MDP_HW_REV_102 &&
@@ -2677,7 +2681,7 @@ int mdss_mdp_pipe_queue_data(struct mdss_mdp_pipe *pipe,
 	params_changed = (pipe->params_changed) ||
 		((pipe->type == MDSS_MDP_PIPE_TYPE_DMA) &&
 		 (pipe->mixer_left->type == MDSS_MDP_MIXER_TYPE_WRITEBACK) &&
-		 (ctl->mdata->mixer_switched)) || roi_changed;
+		 (ctl->mdata->mixer_switched)) || roi_changed || (ctl->power_state == MDSS_PANEL_POWER_LP1);
 
 	/* apply changes that are common in case of multi rects only once */
 	if (params_changed && !delayed_programming) {

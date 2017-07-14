@@ -110,4 +110,8 @@ struct msm_actuator_ctrl_t {
 	uint8_t cam_pinctrl_status;
 };
 
+#if 1//defined(CONFIG_SAMSUNG_OIS_RUMBA_S4) || defined(CONFIG_SAMSUNG_OIS_RUMBA_S6)
+int16_t msm_actuator_move_for_ois_test(void);
+#endif
+
 #endif

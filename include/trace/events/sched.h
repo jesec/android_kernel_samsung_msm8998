@@ -1343,6 +1343,42 @@ TRACE_EVENT(core_ctl_set_boost,
 	TP_printk("refcount=%u, ret=%d", __entry->refcount, __entry->ret)
 );
 
+TRACE_EVENT(perf_stat,
+	TP_PROTO(int pid, const char *name, bool trace_begin),
+	TP_ARGS(pid, name, trace_begin),
+	TP_STRUCT__entry(
+		__field(int, pid)
+		__string(trace_name, name)
+		__field(bool, trace_begin)
+	),
+	TP_fast_assign(
+		__entry->pid = pid;
+		__assign_str(trace_name, name);
+		__entry->trace_begin = trace_begin;
+	),
+	TP_printk("tracing_mark_write: %s|%d|%s", __entry->trace_begin ? "B" : "E",
+		__entry->pid,
+		__get_str(trace_name))
+);
+
+TRACE_EVENT(perf_level,
+	TP_PROTO(int pid, const char *name, unsigned int level),
+	TP_ARGS(pid, name, level),
+	TP_STRUCT__entry(
+		__field(int, pid)
+		__string(trace_name, name)
+		__field(unsigned int, level)
+	),
+	TP_fast_assign(
+		__entry->pid = pid;
+		__assign_str(trace_name, name);
+		__entry->level = level;
+	),
+	TP_printk("tracing_mark_write: %s|%d|%s|%u", "C",
+		__entry->pid,
+		__get_str(trace_name), __entry->level)
+);
+
 /**
  * sched_isolate - called when cores are isolated/unisolated
  *

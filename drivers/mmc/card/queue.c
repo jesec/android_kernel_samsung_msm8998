@@ -12,6 +12,7 @@
 #include <linux/slab.h>
 #include <linux/module.h>
 #include <linux/blkdev.h>
+#include <linux/backing-dev.h>
 #include <linux/freezer.h>
 #include <linux/kthread.h>
 #include <linux/scatterlist.h>
@@ -163,7 +164,11 @@ static int mmc_queue_thread(void *d)
 
 		spin_lock_irq(q->queue_lock);
 		set_current_state(TASK_INTERRUPTIBLE);
-		req = blk_fetch_request(q);
+		if (mq->mqrq_prev->req &&
+				(card && (card->type == MMC_TYPE_SD)))
+			req = NULL;
+		else
+			req = blk_fetch_request(q);
 		mq->mqrq_cur->req = req;
 		spin_unlock_irq(q->queue_lock);
 
@@ -485,6 +490,15 @@ success:
 
 	mq->thread = kthread_run(mmc_queue_thread, mq, "mmcqd/%d%s",
 		host->index, subname ? subname : "");
+
+#ifdef CONFIG_LARGE_DIRTY_BUFFER
+	if (mmc_card_sd(card)) {
+		/* apply more throttle on external sdcard */
+		mq->queue->backing_dev_info.max_ratio = 10;
+               mq->queue->backing_dev_info.min_ratio = 10;
+		mq->queue->backing_dev_info.capabilities |= BDI_CAP_STRICTLIMIT;
+	}
+#endif
 
 	if (IS_ERR(mq->thread)) {
 		ret = PTR_ERR(mq->thread);

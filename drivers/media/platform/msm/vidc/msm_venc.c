@@ -1,4 +1,4 @@
-/* Copyright (c) 2012-2016, The Linux Foundation. All rights reserved.
+/* Copyright (c) 2012-2017, The Linux Foundation. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -54,12 +54,12 @@
  * 3x3 transformation matrix coefficients in s4.9 fixed point format
  */
 static u32 vpe_csc_601_to_709_matrix_coeff[HAL_MAX_MATRIX_COEFFS] = {
-	470, 8170, 8148, 0, 490, 50, 0, 34, 483
+	0x1BE, 0x1FCC, 0x1FA1, 0, 0x1CC, 0x34, 0, 0x22, 0x1CF
 };
 
 /* offset coefficients in s9 fixed point format */
 static u32 vpe_csc_601_to_709_bias_coeff[HAL_MAX_BIAS_COEFFS] = {
-	34, 0, 4
+	0x34, 0, 0x4
 };
 
 /* clamping value for Y/U/V([min,max] for Y/U/V) */
@@ -1758,6 +1758,7 @@ static int msm_venc_start_streaming(struct vb2_queue *q, unsigned int count)
 {
 	struct msm_vidc_inst *inst;
 	int rc = 0;
+	struct vb2_buf_entry *temp, *next;
 	if (!q || !q->drv_priv) {
 		dprintk(VIDC_ERR, "Invalid input, q = %pK\n", q);
 		return -EINVAL;
@@ -1795,6 +1796,19 @@ static int msm_venc_start_streaming(struct vb2_queue *q, unsigned int count)
 	}
 
 stream_start_failed:
+	if (rc) {
+		mutex_lock(&inst->pendingq.lock);
+		list_for_each_entry_safe(temp, next, &inst->pendingq.list,
+			list) {
+			if (temp->vb->type == q->type) {
+				vb2_buffer_done(temp->vb,
+					VB2_BUF_STATE_QUEUED);
+				list_del(&temp->list);
+				kfree(temp);
+			}
+		}
+		mutex_unlock(&inst->pendingq.lock);
+	}
 	return rc;
 }
 
@@ -1836,10 +1850,50 @@ static void msm_venc_buf_queue(struct vb2_buffer *vb)
 		dprintk(VIDC_ERR, "Failed to queue buffer: %d\n", rc);
 }
 
+static void msm_venc_buf_cleanup(struct vb2_buffer *vb)
+{
+	int rc = 0;
+	struct buf_queue *q = NULL;
+	struct msm_vidc_inst *inst = NULL;
+
+	if (!vb) {
+		dprintk(VIDC_ERR, "%s : Invalid vb pointer %pK",
+			__func__, vb);
+		return;
+	}
+
+	inst = vb2_get_drv_priv(vb->vb2_queue);
+	if (!inst) {
+		dprintk(VIDC_ERR, "%s : Invalid inst pointer",
+			__func__);
+		return;
+	}
+
+	q = msm_comm_get_vb2q(inst, vb->type);
+	if (!q) {
+		dprintk(VIDC_ERR,
+			"%s : Failed to find buffer queue for type = %d\n",
+				__func__, vb->type);
+		return;
+	}
+
+	if (q->vb2_bufq.streaming) {
+		dprintk(VIDC_DBG, "%d PORT is streaming\n",
+			vb->type);
+		return;
+	}
+
+	rc = msm_vidc_release_buffers(inst, vb->type);
+	if (rc)
+		dprintk(VIDC_ERR, "%s : Failed to release buffers : %d\n",
+			__func__, rc);
+}
+
 static const struct vb2_ops msm_venc_vb2q_ops = {
 	.queue_setup = msm_venc_queue_setup,
 	.start_streaming = msm_venc_start_streaming,
 	.buf_queue = msm_venc_buf_queue,
+	.buf_cleanup = msm_venc_buf_cleanup,
 	.stop_streaming = msm_venc_stop_streaming,
 };
 
@@ -3166,8 +3220,25 @@ static int try_set_ctrl(struct msm_vidc_inst *inst, struct v4l2_ctrl *ctrl)
 		 */
 		enable.enable = !(ctrl->val);
 		pdata = &enable;
+		switch (ctrl->val) {
+		case V4L2_MPEG_VIDC_VIDEO_PRIORITY_REALTIME_DISABLE:
+			inst->flags &= ~VIDC_REALTIME;
+			break;
+		case V4L2_MPEG_VIDC_VIDEO_PRIORITY_REALTIME_ENABLE:
+			inst->flags |= VIDC_REALTIME;
+			break;
+		default:
+			dprintk(VIDC_WARN,
+				"inst(%pK) invalid priority ctrl value %#x\n",
+				inst, ctrl->val);
+			break;
+		}
 		break;
 	case V4L2_CID_MPEG_VIDC_VIDEO_OPERATING_RATE:
+		dprintk(VIDC_DBG,
+			"inst(%pK) operating rate changed from %d to %d\n",
+			inst, inst->operating_rate >> 16, ctrl->val >> 16);
+		inst->operating_rate = ctrl->val;
 		break;
 	case V4L2_CID_MPEG_VIDC_VIDEO_VENC_BITRATE_TYPE:
 	{
@@ -3558,6 +3629,7 @@ int msm_venc_inst_init(struct msm_vidc_inst *inst)
 	inst->buffer_mode_set[CAPTURE_PORT] = HAL_BUFFER_MODE_STATIC;
 	inst->prop.fps = DEFAULT_FPS;
 	inst->capability.pixelprocess_capabilities = 0;
+	inst->operating_rate = 0;
 	memcpy(&inst->fmts[CAPTURE_PORT], &venc_formats[4],
 			sizeof(struct msm_vidc_format));
 	memcpy(&inst->fmts[OUTPUT_PORT], &venc_formats[0],

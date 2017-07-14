@@ -1,4 +1,4 @@
-/* Copyright (c) 2012-2016, The Linux Foundation. All rights reserved.
+/* Copyright (c) 2012-2017, The Linux Foundation. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -72,6 +72,11 @@
 
 /* bit 4 represents META enable of encoded data buffer */
 #define BUFFER_META_ENABLE	0x0010
+
+/* bit 5 represents timestamp */
+/* bit 5 - 0 -- ASM_DATA_EVENT_READ_DONE will have relative time-stamp*/
+/* bit 5 - 1 -- ASM_DATA_EVENT_READ_DONE will have absolute time-stamp*/
+#define ABSOLUTE_TIMESTAMP_ENABLE  0x0020
 
 /* Enable Sample_Rate/Channel_Mode notification event from Decoder */
 #define SR_CM_NOTIFY_ENABLE	0x0004
@@ -175,6 +180,7 @@ struct audio_aio_read_param {
 	phys_addr_t   paddr;
 	uint32_t      len;
 	uint32_t      uid;
+	uint32_t      flags;/*meta data flags*/
 };
 
 struct audio_port_data {
@@ -264,7 +270,7 @@ int q6asm_open_read_v3(struct audio_client *ac, uint32_t format,
 		       uint16_t bits_per_sample);
 
 int q6asm_open_read_v4(struct audio_client *ac, uint32_t format,
-		       uint16_t bits_per_sample);
+		       uint16_t bits_per_sample, bool ts_mode);
 
 int q6asm_open_write(struct audio_client *ac, uint32_t format
 		/*, uint16_t bits_per_sample*/);
@@ -381,6 +387,10 @@ int q6asm_enc_cfg_blk_aac(struct audio_client *ac,
 			uint32_t sample_rate, uint32_t channels,
 			 uint32_t bit_rate,
 			 uint32_t mode, uint32_t format);
+
+int q6asm_enc_cfg_blk_g711(struct audio_client *ac,
+			 uint32_t frames_per_buf,
+			uint32_t sample_rate);
 
 int q6asm_enc_cfg_blk_pcm(struct audio_client *ac,
 			uint32_t rate, uint32_t channels);
@@ -529,6 +539,9 @@ int q6asm_stream_media_format_block_flac(struct audio_client *ac,
 
 int q6asm_media_format_block_alac(struct audio_client *ac,
 			struct asm_alac_cfg *cfg, int stream_id);
+
+int q6asm_media_format_block_g711(struct audio_client *ac,
+			struct asm_g711_dec_cfg *cfg, int stream_id);
 
 int q6asm_stream_media_format_block_vorbis(struct audio_client *ac,
 			struct asm_vorbis_cfg *cfg, int stream_id);

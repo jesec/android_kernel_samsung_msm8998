@@ -49,8 +49,12 @@
 #include <linux/moduleparam.h>
 #include <linux/uaccess.h>
 #include <linux/bug.h>
+#include <linux/delay.h>
 
 #include "workqueue_internal.h"
+#ifdef CONFIG_SEC_DEBUG
+#include <linux/qcom/sec_debug.h>
+#endif
 
 enum {
 	/*
@@ -1285,6 +1289,12 @@ fail:
 	if (work_is_canceling(work))
 		return -ENOENT;
 	cpu_relax();
+	/*
+	 * The queueing is in progress in another context. If we keep
+	 * taking the pool->lock in a busy loop, the other context may
+	 * never get the lock. Give 1 usec delay to avoid this contention.
+	 */
+	udelay(1);
 	return -EAGAIN;
 }
 
@@ -2073,6 +2083,10 @@ __acquires(&pool->lock)
 	lock_map_acquire_read(&pwq->wq->lockdep_map);
 	lock_map_acquire(&lockdep_map);
 	trace_workqueue_execute_start(work);
+#ifdef CONFIG_SEC_DEBUG
+	secdbg_sched_msg("@%pS", worker->current_func);
+#endif
+
 	worker->current_func(work);
 	/*
 	 * While we must be careful to not use "work" after this, the trace

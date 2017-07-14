@@ -312,6 +312,18 @@ struct wcd9xxx_pdata *wcd9xxx_populate_dt_data(struct device *dev)
 	u32 dmic_clk_drive = WCD9XXX_DMIC_CLK_DRIVE_UNDEFINED;
 	u32 prop_val;
 	int rc = 0;
+	int i;
+	struct of_phandle_args imp_list;
+	struct wcd9xxx_gain_table default_table[MAX_IMPEDANCE_TALBE] = {
+		{    0,       0, 6},
+		{    1,      13, 0},
+		{   14,      42, 4},
+		{   43,     100, 5},
+		{  101,     200, 7},
+		{  201,     450, 8},
+		{  451,    1000, 8},
+		{ 1001, INT_MAX, 6},
+	};
 
 	if (!dev || !dev->of_node)
 		return NULL;
@@ -395,6 +407,24 @@ struct wcd9xxx_pdata *wcd9xxx_populate_dt_data(struct device *dev)
 	}
 
 	pdata->dmic_clk_drv = dmic_clk_drive;
+
+	for (i = 0; i < ARRAY_SIZE(pdata->imp_table); i++) {
+		rc = of_parse_phandle_with_args(dev->of_node,
+			"imp-table", "#list-imp-cells", i, &imp_list);
+		if (rc < 0) {
+			pdata->imp_table[i].min = default_table[i].min;
+			pdata->imp_table[i].max = default_table[i].max;
+			pdata->imp_table[i].gain= default_table[i].gain;
+		} else {
+			pdata->imp_table[i].min = imp_list.args[0];
+			pdata->imp_table[i].max = imp_list.args[1];
+			pdata->imp_table[i].gain= imp_list.args[2];
+		}
+		dev_dbg(dev, "impedance gain table %d, %d, %d\n",
+			pdata->imp_table[i].min,
+			pdata->imp_table[i].max,
+			pdata->imp_table[i].gain);
+	}
 
 	return pdata;
 

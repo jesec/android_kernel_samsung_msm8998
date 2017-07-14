@@ -154,15 +154,16 @@ static size_t build_pmic_string(char *buf, size_t n, int sid,
 
 #define PMIC_PERIPHERAL_TYPE		0x51
 #define PMIC_STRING_MAXLENGTH		80
+char pmic_string[2][PMIC_STRING_MAXLENGTH] = {{'\0'}};
 static int qpnp_revid_probe(struct platform_device *pdev)
 {
 	u8 rev1, rev2, rev3, rev4, pmic_type, pmic_subtype, pmic_status;
 	u8 option1, option2, option3, option4, spare0, fab_id;
 	unsigned int base;
 	int rc;
-	char pmic_string[PMIC_STRING_MAXLENGTH] = {'\0'};
 	struct revid_chip *revid_chip;
 	struct regmap *regmap;
+	static int pmic_info_idx = 0;
 
 	regmap = dev_get_regmap(pdev->dev.parent, NULL);
 	if (!regmap) {
@@ -235,13 +236,15 @@ static int qpnp_revid_probe(struct platform_device *pdev)
 	option3 = (pmic_status >> 4) & 0x3;
 	option4 = (pmic_status >> 6) & 0x3;
 
-	build_pmic_string(pmic_string, PMIC_STRING_MAXLENGTH,
+	build_pmic_string(pmic_string[pmic_info_idx], PMIC_STRING_MAXLENGTH,
 			  to_spmi_device(pdev->dev.parent)->usid,
 			pmic_subtype, rev1, rev2, rev3, rev4);
 	pr_info("%s options: %d, %d, %d, %d\n",
-			pmic_string, option1, option2, option3, option4);
+			pmic_string[pmic_info_idx], option1, option2, option3, option4);
+	pmic_info_idx = 1;
 	return 0;
 }
+EXPORT_SYMBOL(pmic_string);
 
 static struct platform_driver qpnp_revid_driver = {
 	.probe	= qpnp_revid_probe,

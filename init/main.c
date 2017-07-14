@@ -88,6 +88,14 @@
 #include <asm/sections.h>
 #include <asm/cacheflush.h>
 
+#ifdef CONFIG_SEC_GPIO_DVS
+#include <linux/secgpio_dvs.h>
+#endif
+
+#ifdef CONFIG_SEC_BSP
+#include <linux/sec_bsp.h>
+#endif
+
 static int kernel_init(void *);
 
 extern void init_IRQ(void);
@@ -146,6 +154,8 @@ EXPORT_SYMBOL_GPL(static_key_initialized);
  */
 unsigned int reset_devices;
 EXPORT_SYMBOL(reset_devices);
+
+int ddr_start_type = 0;
 
 static int __init set_reset_devices(char *str)
 {
@@ -230,6 +240,27 @@ static int __init loglevel(char *str)
 }
 
 early_param("loglevel", loglevel);
+
+#ifdef CONFIG_SEC_BSP
+unsigned int is_boot_recovery;
+EXPORT_SYMBOL(is_boot_recovery);
+
+static int __init boot_recovery(char *str)
+{
+        int temp = 0;
+
+        if (get_option(&str, &temp)) {
+                is_boot_recovery = temp;
+		pr_info("%s, is_boot_recovery[%d]\n",
+				__func__, is_boot_recovery);
+                return 0;
+        }
+
+        return -EINVAL;
+}
+
+early_param("androidboot.boot_recovery", boot_recovery);
+#endif
 
 /* Change NUL term back to "=", to make "param" the whole string. */
 static int __init repair_env_string(char *param, char *val,
@@ -425,6 +456,13 @@ static int __init do_early_param(char *param, char *val,
 		}
 	}
 	/* We accept everything at this stage. */
+	if ((strncmp(param, "androidboot.ddr_start_type", 27) == 0)) {
+		pr_warn("val = %d\n",*val);
+		if ((strncmp(val, "1", 2) == 0))
+			ddr_start_type = 1;
+		else
+			ddr_start_type = 2;
+	}
 	return 0;
 }
 
@@ -757,6 +795,41 @@ static bool __init_or_module initcall_blacklisted(initcall_t fn)
 #endif
 __setup("initcall_blacklist=", initcall_blacklist);
 
+#ifdef CONFIG_SEC_BSP
+
+
+bool initcall_sec_debug = true;
+
+static int __init_or_module do_one_initcall_sec_debug(initcall_t fn)
+{
+	ktime_t calltime, delta, rettime;
+	unsigned long long duration;
+	int ret;
+	struct device_init_time_entry *entry;
+
+	calltime = ktime_get();
+	ret = fn();
+	rettime = ktime_get();
+	delta = ktime_sub(rettime, calltime);
+	duration = (unsigned long long) ktime_to_ns(delta) >> 10;
+	if (duration > DEVICE_INIT_TIME_100MS) {
+		entry = kmalloc(sizeof(*entry), GFP_KERNEL);
+		if (!entry)
+			return -ENOMEM;
+		entry->buf = kasprintf(GFP_KERNEL, "%pf", fn);
+		if (!entry->buf) {
+			return -ENOMEM;
+		}
+		entry->duration = duration;
+		list_add(&entry->next, &device_init_time_list);
+		printk(KERN_DEBUG "initcall %pF returned %d after %lld usecs\n",
+			 fn, ret, duration);
+	}
+
+	return ret;
+}
+#endif
+
 static int __init_or_module do_one_initcall_debug(initcall_t fn)
 {
 	ktime_t calltime, delta, rettime;
@@ -786,6 +859,10 @@ int __init_or_module do_one_initcall(initcall_t fn)
 
 	if (initcall_debug)
 		ret = do_one_initcall_debug(fn);
+#ifdef CONFIG_SEC_BSP
+	else if (initcall_sec_debug)
+		ret = do_one_initcall_sec_debug(fn);
+#endif
 	else
 		ret = fn();
 
@@ -853,6 +930,10 @@ static void __init do_initcall_level(int level)
 
 	for (fn = initcall_levels[level]; fn < initcall_levels[level+1]; fn++)
 		do_one_initcall(*fn);
+	
+#ifdef CONFIG_SEC_BSP
+	sec_bootstat_add_initcall(initcall_level_names[level]);
+#endif
 }
 
 static void __init do_initcalls(void)
@@ -923,6 +1004,32 @@ static int try_to_run_init_process(const char *init_filename)
 	return ret;
 }
 
+#ifdef CONFIG_DEFERRED_INITCALLS
+extern initcall_t __deferred_initcall_start[], __deferred_initcall_end[];
+
+/* call deferred init routines */
+void __ref do_deferred_initcalls(void)
+{
+	initcall_t *call;
+	static int already_run=0;
+
+	if (already_run) {
+		printk("do_deferred_initcalls() has already run\n");
+		return;
+	}
+
+	already_run=1;
+
+	printk("Running do_deferred_initcalls()\n");
+
+	for(call = __deferred_initcall_start;
+	    call < __deferred_initcall_end; call++)
+		do_one_initcall(*call);
+
+	free_initmem();
+}
+#endif
+
 static noinline void __init kernel_init_freeable(void);
 
 #ifdef CONFIG_DEBUG_RODATA
@@ -952,9 +1059,20 @@ static int __ref kernel_init(void *unused)
 	int ret;
 
 	kernel_init_freeable();
+#ifdef CONFIG_SEC_GPIO_DVS
+	/************************ Caution !!! ****************************/
+	/* This function must be located in appropriate INIT position
+	 * in accordance with the specification of each BB vendor.
+	 */
+	/************************ Caution !!! ****************************/
+	gpio_dvs_check_initgpio();
+#endif
+
 	/* need to finish all async __init code before freeing the memory */
 	async_synchronize_full();
+#ifndef CONFIG_DEFERRED_INITCALLS
 	free_initmem();
+#endif
 	mark_readonly();
 	system_state = SYSTEM_RUNNING;
 	numa_default_policy();

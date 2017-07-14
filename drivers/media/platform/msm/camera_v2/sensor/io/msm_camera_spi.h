@@ -18,6 +18,8 @@
 #include "msm_camera_i2c.h"
 
 #define MAX_SPI_SIZE 110
+#define MAX_SPI_BUF_SIZE	220
+
 #define SPI_DYNAMIC_ALLOC
 
 /**
@@ -34,16 +36,33 @@ struct msm_camera_spi_inst {
 	uint8_t delay_count;	/* total delay count for this inst */
 };
 
-struct msm_spi_write_burst_data {
-	u8 data_msb;
-	u8 data_lsb;
-};
-
-struct msm_spi_write_burst_packet {
+struct msm_companion_spi_write_packet {
 	u8 cmd;
 	u8 addr_msb;
 	u8 addr_lsb;
-	struct msm_spi_write_burst_data data_arr[MAX_SPI_SIZE];
+	u8 data_msb;
+	u8 data_lsb;
+};
+struct msm_companion_spi_write_burst_data{
+	u8 data_msb;
+	u8 data_lsb;
+};
+struct msm_companion_spi_write_burst_packet{
+	u8 cmd;
+	u8 addr_msb;
+	u8 addr_lsb;
+	struct msm_companion_spi_write_burst_data data_arr[MAX_SPI_SIZE];
+};
+
+struct msm_companion_spi_stat_read_rx{
+	u8 data_msb;
+	u8 data_lsb;
+};
+struct msm_companion_spi_stat_read_tx{
+	u8 cmd;
+	u8 addr_msb;
+	u8 addr_lsb;
+	u8 dummy;
 };
 
 struct msm_camera_burst_info {
@@ -66,10 +85,16 @@ struct msm_camera_spi_inst_tbl {
 struct msm_camera_spi_client {
 	struct spi_device *spi_master;
 	struct msm_camera_spi_inst_tbl cmd_tbl;
+	uint8_t device_id;
 	uint8_t device_id0;
 	uint8_t device_id1;
+	uint8_t device_id2;
+	uint8_t device_id3;
+	uint8_t mfr_id;
 	uint8_t mfr_id0;
 	uint8_t mfr_id1;
+	uint8_t mfr_id2;
+	uint8_t mfr_id3;
 	uint8_t retry_delay;	/* ms */
 	uint8_t retries;	/* retry times upon failure */
 	uint8_t busy_mask;	/* busy bit in status reg */
@@ -110,11 +135,9 @@ int32_t msm_camera_spi_write_table(struct msm_camera_i2c_client *client,
 
 int32_t msm_camera_spi_write_burst(struct msm_camera_i2c_client *client,
 	struct msm_camera_i2c_reg_array *reg_setting, uint32_t reg_size,
-	uint32_t buf_len, uint32_t addr,
-	enum msm_camera_i2c_data_type data_type);
-
-int32_t msm_camera_spi_read_burst(struct msm_camera_i2c_client *client,
-	uint32_t read_byte, uint8_t *buffer, uint32_t addr,
-	enum msm_camera_i2c_data_type data_type);
-
+	uint32_t buf_len);
+int32_t msm_camera_spi_read_multi(struct msm_camera_i2c_client *client,
+	uint32_t read_byte, uint8_t *buffer);
+int32_t msm_companion_spi_burst_write(struct spi_device *spi, struct msm_camera_i2c_reg_array * reg_array, uint32_t array_size);
+int32_t msm_companion_spi_stat_read(struct spi_device *spi, uint8_t * buffer, u16 n_page);
 #endif

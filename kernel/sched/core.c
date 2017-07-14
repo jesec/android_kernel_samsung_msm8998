@@ -85,6 +85,10 @@
 #include <asm/paravirt.h>
 #endif
 
+#ifdef CONFIG_SEC_DEBUG
+#include <linux/qcom/sec_debug.h>
+#endif
+
 #include "sched.h"
 #include "../workqueue_internal.h"
 #include "../smpboot.h"
@@ -1248,15 +1252,16 @@ static int __set_cpus_allowed_ptr(struct task_struct *p,
 		goto out;
 
 	cpumask_andnot(&allowed_mask, new_mask, cpu_isolated_mask);
+	cpumask_and(&allowed_mask, &allowed_mask, cpu_active_mask);
 
-	dest_cpu = cpumask_any_and(cpu_active_mask, &allowed_mask);
+	dest_cpu = cpumask_any(&allowed_mask);
 	if (dest_cpu >= nr_cpu_ids) {
-		dest_cpu = cpumask_any_and(cpu_active_mask, new_mask);
+		cpumask_and(&allowed_mask, cpu_active_mask, new_mask);
+		dest_cpu = cpumask_any(&allowed_mask);
 		if (dest_cpu >= nr_cpu_ids) {
 			ret = -EINVAL;
 			goto out;
 		}
-		cpumask_copy(&allowed_mask, new_mask);
 	}
 
 	do_set_cpus_allowed(p, new_mask);
@@ -3412,6 +3417,9 @@ static void __sched notrace __schedule(bool preempt)
 		trace_sched_switch(preempt, prev, next);
 		rq = context_switch(rq, prev, next); /* unlocks the rq */
 		cpu = cpu_of(rq);
+#ifdef CONFIG_SEC_DEBUG
+		sec_debug_task_sched_log(cpu, rq->curr);
+#endif
 	} else {
 		update_task_ravg(prev, rq, TASK_UPDATE, wallclock, 0);
 		lockdep_unpin_lock(&rq->lock);
@@ -4635,6 +4643,8 @@ long sched_setaffinity(pid_t pid, const struct cpumask *in_mask)
 	cpumask_var_t cpus_allowed, new_mask;
 	struct task_struct *p;
 	int retval;
+	int dest_cpu;
+	cpumask_t allowed_mask;
 
 	rcu_read_lock();
 
@@ -4696,8 +4706,10 @@ long sched_setaffinity(pid_t pid, const struct cpumask *in_mask)
 	}
 #endif
 again:
+	cpumask_andnot(&allowed_mask, new_mask, cpu_isolated_mask);
+	dest_cpu = cpumask_any_and(cpu_active_mask, &allowed_mask);
+	if (dest_cpu < nr_cpu_ids) {
 	retval = __set_cpus_allowed_ptr(p, new_mask, true);
-
 	if (!retval) {
 		cpuset_cpus_allowed(p, cpus_allowed);
 		if (!cpumask_subset(new_mask, cpus_allowed)) {
@@ -4710,6 +4722,10 @@ again:
 			goto again;
 		}
 	}
+	} else {
+		retval = -EINVAL;
+	}
+
 out_free_new_mask:
 	free_cpumask_var(new_mask);
 out_free_cpus_allowed:
@@ -5455,6 +5471,37 @@ static struct task_struct fake_task = {
 };
 
 /*
+ * Remove a task from the runqueue and pretend that it's migrating. This
+ * should prevent migrations for the detached task and disallow further
+ * changes to tsk_cpus_allowed.
+ */
+static void
+detach_one_task(struct task_struct *p, struct rq *rq, struct list_head *tasks)
+{
+	lockdep_assert_held(&rq->lock);
+
+	p->on_rq = TASK_ON_RQ_MIGRATING;
+	deactivate_task(rq, p, 0);
+	list_add(&p->se.group_node, tasks);
+}
+
+static void attach_tasks(struct list_head *tasks, struct rq *rq)
+{
+	struct task_struct *p;
+
+	lockdep_assert_held(&rq->lock);
+
+	while (!list_empty(tasks)) {
+		p = list_first_entry(tasks, struct task_struct, se.group_node);
+		list_del_init(&p->se.group_node);
+
+		BUG_ON(task_rq(p) != rq);
+		activate_task(rq, p, 0);
+		p->on_rq = TASK_ON_RQ_QUEUED;
+	}
+}
+
+/*
  * Migrate all tasks (not pinned if pinned argument say so) from the rq,
  * sleeping tasks will be migrated by try_to_wake_up()->select_task_rq().
  *
@@ -5468,6 +5515,7 @@ static void migrate_tasks(struct rq *dead_rq, bool migrate_pinned_tasks)
 	struct task_struct *next, *stop = rq->stop;
 	int dest_cpu;
 	unsigned int num_pinned_kthreads = 1; /* this thread */
+	LIST_HEAD(tasks);
 	cpumask_t avail_cpus;
 
 	cpumask_andnot(&avail_cpus, cpu_online_mask, cpu_isolated_mask);
@@ -5492,12 +5540,10 @@ static void migrate_tasks(struct rq *dead_rq, bool migrate_pinned_tasks)
 
 	for (;;) {
 		/*
-		 * There's this thread running + pinned threads, bail when
-		 * that's the only remaining threads.
+		 * There's this thread running, bail when that's the only
+		 * remaining thread.
 		 */
-		if ((migrate_pinned_tasks && rq->nr_running == 1) ||
-		   (!migrate_pinned_tasks &&
-		    rq->nr_running <= num_pinned_kthreads))
+		if (rq->nr_running == 1)
 			break;
 
 		/*
@@ -5510,8 +5556,9 @@ static void migrate_tasks(struct rq *dead_rq, bool migrate_pinned_tasks)
 
 		if (!migrate_pinned_tasks && next->flags & PF_KTHREAD &&
 			!cpumask_intersects(&avail_cpus, &next->cpus_allowed)) {
-			lockdep_unpin_lock(&rq->lock);
+			detach_one_task(next, rq, &tasks);
 			num_pinned_kthreads += 1;
+			lockdep_unpin_lock(&rq->lock);
 			continue;
 		}
 
@@ -5559,6 +5606,9 @@ static void migrate_tasks(struct rq *dead_rq, bool migrate_pinned_tasks)
 	}
 
 	rq->stop = stop;
+
+	if (num_pinned_kthreads > 1)
+		attach_tasks(&tasks, rq);
 }
 
 static void set_rq_online(struct rq *rq);
@@ -5600,6 +5650,7 @@ int do_isolation_work_cpu_stop(void *data)
 	 */
 	nohz_balance_clear_nohz_mask(cpu);
 
+	clear_hmp_request(cpu);
 	local_irq_enable();
 	return 0;
 }
@@ -5724,7 +5775,6 @@ int sched_isolate_cpu(int cpu)
 
 	migrate_sync_cpu(cpu, cpumask_first(&avail_cpus));
 	stop_cpus(cpumask_of(cpu), do_isolation_work_cpu_stop, 0);
-	clear_hmp_request(cpu);
 
 	calc_load_migrate(rq);
 	update_max_interval();
@@ -6023,7 +6073,6 @@ migration_call(struct notifier_block *nfb, unsigned long action, void *hcpu)
 		set_window_start(rq);
 		raw_spin_unlock_irqrestore(&rq->lock, flags);
 		rq->calc_load_update = calc_load_update;
-		account_reset_rq(rq);
 		break;
 
 	case CPU_ONLINE:
@@ -7887,6 +7936,11 @@ void __init sched_init(void)
 	int i, j;
 	unsigned long alloc_size = 0, ptr;
 
+#ifdef CONFIG_SEC_DEBUG
+	sec_gaf_supply_rqinfo(offsetof(struct rq, curr),
+		offsetof(struct cfs_rq, rq));
+#endif
+
 	if (sched_enable_hmp)
 		pr_info("HMP scheduling enabled.\n");
 
@@ -8020,6 +8074,7 @@ void __init sched_init(void)
 		rq->avg_irqload = 0;
 		rq->irqload_ts = 0;
 		rq->static_cpu_pwr_cost = 0;
+		rq->ignore_cstate_awareness = 0;
 		rq->cc.cycles = 1;
 		rq->cc.time = 1;
 		rq->cstate = 0;
@@ -8070,6 +8125,9 @@ void __init sched_init(void)
 		init_rq_hrtick(rq);
 		atomic_set(&rq->nr_iowait, 0);
 	}
+
+	i = alloc_related_thread_groups();
+	BUG_ON(i);
 
 	set_hmp_defaults();
 

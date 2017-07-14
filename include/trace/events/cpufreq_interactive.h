@@ -142,6 +142,24 @@ TRACE_EVENT(cpufreq_interactive_cpuload,
 		      __entry->prev, __entry->predicted)
 );
 
+TRACE_EVENT(cpufreq_interactive_cpuutil,
+	    TP_PROTO(unsigned long cpu_id, unsigned long cpu_util,
+		     unsigned long cpu_load),
+	    TP_ARGS(cpu_id, cpu_util, cpu_load),
+	    TP_STRUCT__entry(
+		__field(unsigned long, cpu_id)
+		__field(unsigned long, cpu_util)
+		__field(unsigned long, cpu_load)
+	    ),
+	    TP_fast_assign(
+		__entry->cpu_id = cpu_id;
+		__entry->cpu_load = cpu_load;
+		__entry->cpu_util = cpu_util;
+	    ),
+	    TP_printk("cpu=%lu load=%lu demand=%lu", __entry->cpu_id,
+		      __entry->cpu_util, __entry->cpu_load)
+);
+
 #endif /* _TRACE_CPUFREQ_INTERACTIVE_H */
 
 /* This part must be outside protection */

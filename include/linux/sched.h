@@ -1952,6 +1952,9 @@ struct task_struct {
 	unsigned int	sequential_io;
 	unsigned int	sequential_io_avg;
 #endif
+#ifdef CONFIG_SDP
+	unsigned int sensitive;
+#endif
 #ifdef CONFIG_DEBUG_ATOMIC_SLEEP
 	unsigned long	task_state_change;
 #endif
@@ -2075,15 +2078,9 @@ static inline pid_t task_tgid_nr(struct task_struct *tsk)
 	return tsk->tgid;
 }
 
-pid_t task_tgid_nr_ns(struct task_struct *tsk, struct pid_namespace *ns);
-
-static inline pid_t task_tgid_vnr(struct task_struct *tsk)
-{
-	return pid_vnr(task_tgid(tsk));
-}
-
-
+static pid_t task_tgid_nr_ns(struct task_struct *tsk, struct pid_namespace *ns);
 static inline int pid_alive(const struct task_struct *p);
+
 static inline pid_t task_ppid_nr_ns(const struct task_struct *tsk, struct pid_namespace *ns)
 {
 	pid_t pid = 0;
@@ -2122,6 +2119,16 @@ static inline pid_t task_session_nr_ns(struct task_struct *tsk,
 static inline pid_t task_session_vnr(struct task_struct *tsk)
 {
 	return __task_pid_nr_ns(tsk, PIDTYPE_SID, NULL);
+}
+
+static inline pid_t task_tgid_nr_ns(struct task_struct *tsk, struct pid_namespace *ns)
+{
+	return __task_pid_nr_ns(tsk, __PIDTYPE_TGID, ns);
+}
+
+static inline pid_t task_tgid_vnr(struct task_struct *tsk)
+{
+	return __task_pid_nr_ns(tsk, __PIDTYPE_TGID, NULL);
 }
 
 /* obsolete, do not use */
@@ -2401,6 +2408,8 @@ struct cpu_cycle_counter_cb {
 	u64 (*get_cpu_cycle_counter)(int cpu);
 };
 
+#define MAX_NUM_CGROUP_COLOC_ID	20
+
 #ifdef CONFIG_SCHED_HMP
 extern void free_task_load_ptrs(struct task_struct *p);
 extern int sched_set_window(u64 window_start, unsigned int window_size);
@@ -2413,8 +2422,12 @@ extern int sched_set_init_task_load(struct task_struct *p, int init_load_pct);
 extern u32 sched_get_init_task_load(struct task_struct *p);
 extern int sched_set_static_cpu_pwr_cost(int cpu, unsigned int cost);
 extern unsigned int sched_get_static_cpu_pwr_cost(int cpu);
+extern int sched_set_ignore_cstate_awareness(int cpu, int value);
+extern int sched_get_ignore_cstate_awareness(int cpu);
 extern int sched_set_static_cluster_pwr_cost(int cpu, unsigned int cost);
 extern unsigned int sched_get_static_cluster_pwr_cost(int cpu);
+extern int sched_set_cluster_wake_idle(int cpu, unsigned int wake_idle);
+extern unsigned int sched_get_cluster_wake_idle(int cpu);
 extern int sched_update_freq_max_load(const cpumask_t *cpumask);
 extern void sched_update_cpu_freq_min_max(const cpumask_t *cpus,
 							u32 fmin, u32 fmax);
@@ -3447,4 +3460,6 @@ static inline unsigned long rlimit_max(unsigned int limit)
 	return task_rlimit_max(current, limit);
 }
 
+extern void save_pcpu_tick(int cpu);
+extern void restore_pcpu_tick(int cpu);
 #endif

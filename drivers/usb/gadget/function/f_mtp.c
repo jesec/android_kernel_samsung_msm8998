@@ -1872,7 +1872,7 @@ struct usb_function *function_alloc_mtp_ptp(struct usb_function_instance *fi,
 	dev->function.unbind = mtp_function_unbind;
 	dev->function.set_alt = mtp_function_set_alt;
 	dev->function.disable = mtp_function_disable;
-	dev->function.setup = mtp_ctrlreq_configfs;
+	dev->function.ctrlrequest = mtp_ctrlreq_configfs;
 	dev->function.free_func = mtp_free;
 	dev->is_ptp = !mtp_config;
 	fi->f = &dev->function;

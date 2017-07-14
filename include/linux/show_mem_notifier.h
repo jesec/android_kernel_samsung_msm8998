@@ -17,4 +17,5 @@ int show_mem_notifier_register(struct notifier_block *nb);
 
 int show_mem_notifier_unregister(struct notifier_block *nb);
 
+void show_mem_call_notifiers_simple(struct seq_file *s);
 void show_mem_call_notifiers(void);

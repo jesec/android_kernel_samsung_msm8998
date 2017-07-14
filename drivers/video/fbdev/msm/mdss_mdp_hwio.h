@@ -66,6 +66,7 @@ static inline u32 mdss_mdp_hwio_mask(struct mdss_mdp_hwio_cfg *cfg, u32 val)
 #define MDSS_MDP_REG_INTR_EN				0x00010
 #define MDSS_MDP_REG_INTR_STATUS			0x00014
 #define MDSS_MDP_REG_INTR_CLEAR				0x00018
+#define MDSS_MDP_REG_VSYNC_SEL				0x00414
 #define MDSS_MDP_REG_HIST_INTR_EN			0x0001C
 #define MDSS_MDP_REG_HIST_INTR_STATUS			0x00020
 #define MDSS_MDP_REG_HIST_INTR_CLEAR			0x00024

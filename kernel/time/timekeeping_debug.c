@@ -69,6 +69,11 @@ late_initcall(tk_debug_sleep_time_init);
 
 void tk_debug_account_sleep_time(struct timespec64 *t)
 {
+#ifdef CONFIG_SEC_PM_DEBUG
+	printk("Suspended for %lu.%03lu seconds\n",
+			t->tv_sec, t->tv_nsec / NSEC_PER_MSEC);
+#endif
+
 	sleep_time_bin[fls(t->tv_sec)]++;
 }
 

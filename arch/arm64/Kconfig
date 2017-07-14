@@ -467,6 +467,11 @@ config CAVIUM_ERRATUM_23154
 
 endmenu
 
+config QCOM_TLB_EL2_HANDLER
+	bool "Raise TLB conflict exception to EL2"
+	help
+	  This option enables TLB conflict to be handled
+	  by EL2.
 
 choice
 	prompt "Page size"
@@ -599,6 +604,11 @@ config ARCH_NR_GPIO
 
           If unsure, leave the default value.
 
+config QCOM_TLB_EL2_HANDLER
+	bool "Raise TLB conflict exception to EL2"
+	help
+	  This option enables TLB conflict to be handled
+	  by EL2.
 
 source kernel/Kconfig.preempt
 source kernel/Kconfig.hz
@@ -785,7 +795,6 @@ menu "ARMv8.1 architectural features"
 
 config ARM64_HW_AFDBM
 	bool "Support for hardware updates of the Access and Dirty page flags"
-	default y
 	help
 	  The ARMv8.1 architecture extensions introduce support for
 	  hardware updates of the access and dirty information in page
@@ -802,7 +811,6 @@ config ARM64_HW_AFDBM
 
 config ARM64_PAN
 	bool "Enable support for Privileged Access Never (PAN)"
-	default y
 	help
 	 Privileged Access Never (PAN; part of the ARMv8.1 Extensions)
 	 prevents the kernel or hypervisor from accessing user-space (EL0)
@@ -830,7 +838,6 @@ endmenu
 
 config ARM64_UAO
 	bool "Enable support for User Access Override (UAO)"
-	default y
 	help
 	  User Access Override (UAO; part of the ARMv8.2 Extensions)
 	  causes the 'unprivileged' variant of the load/store instructions to
@@ -1026,6 +1033,237 @@ config SYSVIPC_COMPAT
 
 endmenu
 
+config SEC_FACTORY
+	bool "when it comes to sec factory mode"
+	default n
+	select SEC_NAD
+	help
+		It will support a sec factory mode
+
+config SEC_DREAMQLTE_PROJECT
+	depends on ARCH_MSM8998
+		default n
+		bool "Samsung DREAMQLTE Project"
+		help
+		  Support for Samsung DREAMQLTE Project
+
+config MACH_DREAMQLTE_SINGLE
+	depends on SEC_DREAMQLTE_PROJECT
+		default n
+		bool "Samsung DREAMQLTE USA SQ"
+		help
+		  Support for Samsung DREAMQLTE USA SQ device.
+
+config MACH_DREAMQLTE_VZW
+	depends on SEC_DREAMQLTE_PROJECT
+		default n
+		bool "Samsung DREAMQLTE USA VZW"
+		help
+		  Support for Samsung DREAMQLTE USA VZW device.
+
+config MACH_DREAMQLTE_CHNZC
+	depends on SEC_DREAMQLTE_PROJECT
+		default n
+		bool "Samsung DREAMQLTE CHN OPEN"
+		help
+		  Support for Samsung DREAMQLTE CHN OPEN device.
+
+config MACH_DREAMQLTE_CHNHK
+	depends on SEC_DREAMQLTE_PROJECT
+		default n
+		bool "Samsung DREAMQLTE CHN HONGKONG"
+		help
+		  Support for Samsung DREAMQLTE CHN HONGKONG device.
+
+config MACH_DREAMQLTE_CHNZM
+	depends on SEC_DREAMQLTE_PROJECT
+		default n
+		bool "Samsung DREAMQLTE CHN CMCC"
+		help
+		  Support for Samsung DREAMQLTE CHN CMCC device.
+
+config MACH_DREAMQLTE_CAN_OPEN
+	depends on SEC_DREAMQLTE_PROJECT
+		default n
+		bool "Samsung DREAMQLTE CAN OPEN"
+		help
+		  Support for Samsung DREAMQLTE CAN OPEN device.
+
+config MACH_DREAMQLTE_KDI
+	depends on SEC_DREAMQLTE_PROJECT
+		default n
+		bool "Samsung DREAMQLTE JPN KDI"
+		help
+		  Support for Samsung DREAMQLTE JPN KDI device.
+
+config MACH_DREAMQLTE_DCM
+	depends on SEC_DREAMQLTE_PROJECT
+		default n
+		bool "Samsung DREAMQLTE JPN DCM"
+		help
+		  Support for Samsung DREAMQLTE JPN DCM device.
+
+config MACH_DREAMQLTE_USA_LDU
+	depends on SEC_DREAMQLTE_PROJECT
+		default n
+		bool "Samsung DREAMQLTE USA LDU"
+		help
+		  Support for Samsung DREAMQLTE USA LDU device.
+
+config MACH_DREAMQLTE_USA_OPEN
+        depends on SEC_DREAMQLTE_PROJECT
+                default n
+                bool "Samsung DREAMQLTE USA OPEN"
+                help
+                  Support for Samsung DREAMQLTE USA OPEN device.
+
+config MACH_DREAMQLTE_CHN_LDU
+        depends on SEC_DREAMQLTE_PROJECT
+                default n
+                bool "Samsung DREAMQLTE CHN LDU"
+                help
+                  Support for Samsung DREAMQLTE CHN LDU device.
+
+config SEC_DREAM2QLTE_PROJECT
+	depends on ARCH_MSM8998
+		default n
+		bool "Samsung DREAM2QLTE Project"
+		help
+		  Support for Samsung DREAM2QLTE Project
+
+config MACH_DREAM2QLTE_SINGLE
+	depends on SEC_DREAM2QLTE_PROJECT
+		default n
+		bool "Samsung DREAM2QLTE USA SQ"
+		help
+		  Support for Samsung DREAM2QLTE USA SQ device.
+
+config MACH_DREAM2QLTE_VZW
+	depends on SEC_DREAM2QLTE_PROJECT
+		default n
+		bool "Samsung DREAM2QLTE USA VZW"
+		help
+		  Support for Samsung DREAM2QLTE USA VZW device.
+
+config MACH_DREAM2QLTE_CHNZC
+	depends on SEC_DREAM2QLTE_PROJECT
+		default n
+		bool "Samsung DREAM2QLTE CHN OPEN"
+		help
+		  Support for Samsung DREAM2QLTE CHN OPEN device.
+
+config MACH_DREAM2QLTE_CHNHK
+	depends on SEC_DREAM2QLTE_PROJECT
+		default n
+		bool "Samsung DREAM2QLTE CHN HONGKONG"
+		help
+		  Support for Samsung DREAM2QLTE CHN HONGKONG device.
+
+config MACH_DREAM2QLTE_CAN_OPEN
+	depends on SEC_DREAM2QLTE_PROJECT
+		default n
+		bool "Samsung DREAM2QLTE CAN OPEN"
+		help
+		  Support for Samsung DREAM2QLTE CAN OPEN device.
+
+config MACH_DREAM2QLTE_DCM
+	depends on SEC_DREAM2QLTE_PROJECT
+		default n
+		bool "Samsung DREAM2QLTE JPN DCM"
+		help
+		  Support for Samsung DREAM2QLTE JPN DCM device.
+
+config MACH_DREAM2QLTE_KDI
+	depends on SEC_DREAM2QLTE_PROJECT
+		default n
+		bool "Samsung DREAM2QLTE JPN KDI"
+		help
+		  Support for Samsung DREAM2QLTE JPN KDI device.
+
+config MACH_DREAM2QLTE_LDU
+	depends on SEC_DREAM2QLTE_PROJECT
+		default n
+		bool "Samsung DREAM2QLTE USA LDU"
+		help
+		  Support for Samsung DREAM2QLTE USA LDU device.
+
+config MACH_DREAM2QLTE_USA_OPEN
+        depends on SEC_DREAM2QLTE_PROJECT
+                default n
+                bool "Samsung DREAM2QLTE USA OPEN"
+                help
+                  Support for Samsung DREAM2QLTE USA OPEN device.
+
+config MACH_DREAM2QLTE_CHN_LDU
+        depends on SEC_DREAM2QLTE_PROJECT
+                default n
+                bool "Samsung DREAM2QLTE CHN LDU"
+                help
+                  Support for Samsung DREAM2QLTE CHN LDU device.
+
+config SEC_BAIKALQLTE_PROJECT
+        depends on ARCH_MSM8998
+                default n
+                bool "Samsung BAIKALQLTE Project"
+                help
+                  Support for Samsung BAIKALQLTE Project
+
+config MACH_BAIKALQLTE_SINGLE
+        depends on SEC_BAIKALQLTE_PROJECT
+                default n
+                bool "Samsung BAIKALQLTE USA SQ"
+                help
+                  Support for Samsung BAIKALQLTE USA SQ device.
+
+config SEC_CRUISERLTE_PROJECT
+	depends on ARCH_MSM8998
+		default n
+		bool "Samsung CRUISERLTE Project"
+		help
+		  Support for Samsung CRUISERLTE Project
+
+config MACH_CRUISERLTE_USA_ATT
+        depends on SEC_CRUISERLTE_PROJECT
+                default n
+                bool "Samsung CRUISERLTE USA ATT"
+                help
+                  Support for Samsung CRUISERLTE USA ATT device.
+
+config DRV_SAMSUNG
+	bool "samsung device dedicated drivers option"
+	default y
+	help
+	  This is driver option for samsung sec_class
+	  Say y here to enable samsung classes for drivers
+	  Provide option of enabling sec class
+	  Supports sec drivers key, touch, sec_debug etc
+
+config RELOCATABLE_KERNEL
+	bool "set kernel to relocatable in both virtual and physical address"
+	default n
+	help
+	  This configuare will allow you to config the kernel into position independent kernel, with '--PIE' insert into LD script.
+
+config USER_RESET_DEBUG
+	bool "reset reason debug feature in user version"
+	default n
+	help
+	  This option provides reset history log in user version.
+	  This option enable proc/reset_reason support
+
+config USER_RESET_DEBUG_TEST
+	bool "reset reason debug test feature in eng version"
+	depends on USER_RESET_DEBUG
+	default n
+	help
+	  This option enable for test in eng version(KP, DP, TP, WP)
+
+config SEC_BITSCATTER
+	bool "Enables bitScatter library"
+	default y
+	help
+	  This option enables sysfs interfaces for bitSscatter configuration.
+
 menu "Power management options"
 
 source "kernel/power/Kconfig"
@@ -1035,6 +1273,10 @@ config ARCH_SUSPEND_POSSIBLE
 
 endmenu
 
+config SAMSUNG_PRODUCT_SHIP
+	bool "set up for product shipping"
+	default n
+
 menu "CPU Power Management"
 
 source "drivers/cpuidle/Kconfig"
@@ -1042,6 +1284,21 @@ source "drivers/cpuidle/Kconfig"
 source "drivers/cpufreq/Kconfig"
 
 endmenu
+
+config DRV_SAMSUNG
+	bool "samsung device dedicated drivers option"
+	default y
+	help
+	  This is driver option for samsung sec_class
+	  Say y here to enable samsung classes for drivers
+	  Provide option of enabling sec class
+	  Supports sec drivers key, touch, sec_debug etc
+
+config SEC_PERIPHERAL_SECURE_CHK
+	bool "PERIPHERAL SECURE check"
+	default n
+	help
+	  To check the authentication of peripheral image.
 
 source "net/Kconfig"
 

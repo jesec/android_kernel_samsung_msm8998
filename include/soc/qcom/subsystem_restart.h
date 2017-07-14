@@ -25,6 +25,14 @@ enum {
 	RESET_LEVEL_MAX
 };
 
+#ifdef CONFIG_SENSORS_SSC
+enum {
+	SSR_ERROR_FATAL = 0,
+	SSR_WDOG_BITE,
+	SSR_BY_AP,
+};
+#endif
+
 struct device;
 struct module;
 
@@ -75,6 +83,8 @@ struct subsys_desc {
 	unsigned int wdog_bite_irq;
 	unsigned int generic_irq;
 	int force_stop_gpio;
+	int stop_reason_0_gpio;
+	int stop_reason_1_gpio;
 	int ramdump_disable_gpio;
 	int shutdown_ack_gpio;
 	int ramdump_disable;
@@ -85,6 +95,9 @@ struct subsys_desc {
 	int sysmon_shutdown_ret;
 	bool system_debug;
 	const char *edge;
+#ifdef CONFIG_SENSORS_SSC
+	int gpio_sensor_ldo;
+#endif
 };
 
 /**
@@ -122,10 +135,21 @@ extern void subsys_unregister(struct subsys_device *dev);
 extern void subsys_default_online(struct subsys_device *dev);
 extern void subsys_set_crash_status(struct subsys_device *dev, bool crashed);
 extern bool subsys_get_crash_status(struct subsys_device *dev);
+#ifdef CONFIG_SENSORS_SSC
+extern void subsys_set_ssr_reason(struct subsys_device *dev, int ssr_reason);
+extern int subsys_get_ssr_reason(struct subsys_device *dev);
+#endif // CONFIG_SENSORS_SSC
 void notify_proxy_vote(struct device *device);
 void notify_proxy_unvote(struct device *device);
 void complete_err_ready(struct subsys_device *subsys);
 extern int wait_for_shutdown_ack(struct subsys_desc *desc);
+extern int subsystem_crash(const char *name);
+extern void subsys_force_stop(const char *name, bool val);
+extern void subsys_set_reset_reason(const char *name, int val);
+#ifdef CONFIG_SEC_NAD
+int subsystem_get_count_for_NAD(void *subsystem);
+struct subsys_device *find_subsys_for_NAD(const char *str);
+#endif
 #else
 
 static inline int subsys_get_restart_level(struct subsys_device *dev)
@@ -180,12 +204,22 @@ static inline bool subsys_get_crash_status(struct subsys_device *dev)
 {
 	return false;
 }
+#ifdef CONFIG_SENSORS_SSC
+void subsys_set_ssr_reason(struct subsys_device *dev, int ssr_reason) { }
+static inline int subsys_get_ssr_reason(struct subsys_device *dev)
+{
+	return 0;
+}
+#endif // CONFIG_SENSORS_SSC
 static inline void notify_proxy_vote(struct device *device) { }
 static inline void notify_proxy_unvote(struct device *device) { }
 static inline int wait_for_shutdown_ack(struct subsys_desc *desc)
 {
 	return -ENOSYS;
 }
+static inline subsystem_crash(const char *name) { }
+static inline void subsys_force_stop(const char *name, bool val) { }
+static inline void subsys_set_reset_reason(const char *name, int val) { }
 #endif /* CONFIG_MSM_SUBSYSTEM_RESTART */
 
 #endif

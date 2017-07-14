@@ -1,4 +1,4 @@
-/* Copyright (c) 2015-2016, The Linux Foundation. All rights reserved.
+/* Copyright (c) 2015-2017, The Linux Foundation. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -107,7 +107,7 @@ static void gsi_handle_ch_ctrl(int ee)
 		GSI_EE_n_CNTXT_SRC_GSI_CH_IRQ_OFFS(ee));
 	gsi_writel(ch, gsi_ctx->base +
 		GSI_EE_n_CNTXT_SRC_GSI_CH_IRQ_CLR_OFFS(ee));
-	GSIDBG("ch %x\n", ch);
+	GSIERR("ch %x\n", ch);
 	for (i = 0; i < 32; i++) {
 		if ((1 << i) & ch) {
 			if (i >= gsi_ctx->max_ch || i >= GSI_CHAN_MAX) {
@@ -121,7 +121,7 @@ static void gsi_handle_ch_ctrl(int ee)
 			ctx->state = (val &
 				GSI_EE_n_GSI_CH_k_CNTXT_0_CHSTATE_BMSK) >>
 				GSI_EE_n_GSI_CH_k_CNTXT_0_CHSTATE_SHFT;
-			GSIDBG("ch %u state updated to %u\n", i, ctx->state);
+			GSIERR("ch %u state updated to %u\n", i, ctx->state);
 			complete(&ctx->compl);
 			gsi_ctx->ch_dbg[i].cmd_completed++;
 		}
@@ -362,8 +362,13 @@ static void gsi_process_chan(struct gsi_xfer_compl_evt *evt,
 	notify->chan_user_data = ch_ctx->props.chan_user_data;
 	notify->evt_id = evt->code;
 	notify->bytes_xfered = evt->len;
-	if (callback)
+	if (callback) {
+		if (atomic_read(&ch_ctx->poll_mode)) { 
+			GSIERR("Calling client callback in polling mode\n"); 
+			WARN_ON(1); 
+		} 
 		ch_ctx->props.xfer_cb(notify);
+	}
 }
 
 static void gsi_process_evt_re(struct gsi_evt_ctx *ctx,
@@ -459,12 +464,12 @@ check_again:
 			ctx->ring.rp = rp;
 			while (ctx->ring.rp_local != rp) {
 				++cntr;
-				gsi_process_evt_re(ctx, &notify, true);
 				if (ctx->props.exclusive &&
 					atomic_read(&ctx->chan->poll_mode)) {
 					cntr = 0;
 					break;
 				}
+				gsi_process_evt_re(ctx, &notify, true);
 			}
 			gsi_ring_evt_doorbell(ctx);
 			if (cntr != 0)
@@ -1984,6 +1989,10 @@ reset:
 			GSI_EE_n_GSI_CH_CMD_CHID_BMSK) |
 		((op << GSI_EE_n_GSI_CH_CMD_OPCODE_SHFT) &
 		 GSI_EE_n_GSI_CH_CMD_OPCODE_BMSK));
+	if (!reset_done)
+		GSIERR("Issue first reset\n");
+	else
+		GSIERR("Issue second reset\n");
 	gsi_writel(val, gsi_ctx->base +
 			GSI_EE_n_GSI_CH_CMD_OFFS(gsi_ctx->per.ee));
 	res = wait_for_completion_timeout(&ctx->compl, GSI_CMD_TIMEOUT);
@@ -1992,7 +2001,7 @@ reset:
 		mutex_unlock(&gsi_ctx->mlock);
 		return -GSI_STATUS_TIMED_OUT;
 	}
-
+	GSIERR("response received\n");
 	if (ctx->state != GSI_CHAN_STATE_ALLOCATED) {
 		GSIERR("chan_hdl=%lu unexpected state=%u\n", chan_hdl,
 				ctx->state);
@@ -2721,6 +2730,16 @@ int gsi_enable_fw(phys_addr_t gsi_base_addr, u32 gsi_size)
 
 }
 EXPORT_SYMBOL(gsi_enable_fw);
+
+void gsi_get_inst_ram_offset_and_size(unsigned long *base_offset,
+		unsigned long *size)
+{
+	if (base_offset)
+		*base_offset = GSI_GSI_INST_RAM_BASE_OFFS;
+	if (size)
+		*size = GSI_GSI_INST_RAM_SIZE;
+}
+EXPORT_SYMBOL(gsi_get_inst_ram_offset_and_size);
 
 static int msm_gsi_probe(struct platform_device *pdev)
 {

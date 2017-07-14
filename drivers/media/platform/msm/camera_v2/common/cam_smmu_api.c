@@ -1,4 +1,4 @@
-/* Copyright (c) 2014-2016, The Linux Foundation. All rights reserved.
+/* Copyright (c) 2014-2017, The Linux Foundation. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -26,11 +26,12 @@
 #include <linux/workqueue.h>
 #include <soc/qcom/scm.h>
 #include <soc/qcom/secure_buffer.h>
+#include <msm_camera_tz_util.h>
 #include "cam_smmu_api.h"
 
-#define SCRATCH_ALLOC_START SZ_128K
-#define SCRATCH_ALLOC_END   SZ_256M
-#define VA_SPACE_END	    SZ_2G
+#define SCRATCH_ALLOC_START	SZ_128K
+#define SCRATCH_ALLOC_END	SZ_256M
+#define VA_SPACE_END		SZ_2G
 #define IOMMU_INVALID_DIR -1
 #define BYTE_SIZE 8
 #define COOKIE_NUM_BYTE 2
@@ -47,6 +48,7 @@
 #define CAMERA_DEVICE_ID 0x16
 #define SECURE_SYSCALL_ID 0x18
 
+//#define CONFIG_CAM_SMMU_DBG
 #ifdef CONFIG_CAM_SMMU_DBG
 #define CDBG(fmt, args...) pr_err(fmt, ##args)
 #else
@@ -160,20 +162,20 @@ struct cam_sec_buff_info {
 static struct cam_iommu_cb_set iommu_cb_set;
 
 static enum dma_data_direction cam_smmu_translate_dir(
-	enum cam_smmu_map_dir dir);
+					enum cam_smmu_map_dir dir);
 
 static int cam_smmu_check_handle_unique(int hdl);
 
 static int cam_smmu_create_iommu_handle(int idx);
 
 static int cam_smmu_create_add_handle_in_table(char *name,
-	int *hdl);
+					int *hdl);
 
 static struct cam_dma_buff_info *cam_smmu_find_mapping_by_ion_index(int idx,
-	int ion_fd);
+					int ion_fd);
 
 static struct cam_sec_buff_info *cam_smmu_find_mapping_by_sec_buf_idx(int idx,
-	int ion_fd);
+					int ion_fd);
 
 static int cam_smmu_init_scratch_map(struct scratch_mapping *scratch_map,
 					dma_addr_t base, size_t size,
@@ -187,19 +189,19 @@ static int cam_smmu_free_scratch_va(struct scratch_mapping *mapping,
 					dma_addr_t addr, size_t size);
 
 static struct cam_dma_buff_info *cam_smmu_find_mapping_by_virt_address(int idx,
-		dma_addr_t virt_addr);
+					dma_addr_t virt_addr);
 
 static int cam_smmu_map_buffer_and_add_to_list(int idx, int ion_fd,
-	enum dma_data_direction dma_dir, dma_addr_t *paddr_ptr,
-	size_t *len_ptr);
+					enum dma_data_direction dma_dir, dma_addr_t *paddr_ptr,
+					size_t *len_ptr);
 
 static int cam_smmu_alloc_scratch_buffer_add_to_list(int idx,
-					      size_t virt_len,
-					      size_t phys_len,
-					      unsigned int iommu_dir,
-					      dma_addr_t *virt_addr);
+					size_t virt_len,
+					size_t phys_len,
+					unsigned int iommu_dir,
+					dma_addr_t *virt_addr);
 static int cam_smmu_unmap_buf_and_remove_from_list(
-	struct cam_dma_buff_info *mapping_info, int idx);
+					struct cam_dma_buff_info *mapping_info, int idx);
 
 static int cam_smmu_free_scratch_buffer_remove_from_list(
 					struct cam_dma_buff_info *mapping_info,
@@ -538,7 +540,7 @@ static int cam_smmu_check_handle_unique(int hdl)
 }
 
 /**
- *  use low 2 bytes for handle cookie
+*	use low 2 bytes for handle cookie
  */
 static int cam_smmu_create_iommu_handle(int idx)
 {
@@ -593,7 +595,7 @@ static int cam_smmu_create_add_handle_in_table(char *name,
 			iommu_cb_set.cb_info[i].cb_count = 0;
 			iommu_cb_set.cb_info[i].ref_cnt++;
 			*hdl = handle;
-			CDBG("%s creates handle 0x%x\n", name, handle);
+			pr_err("%s creates handle 0x%x\n", name, handle);
 			mutex_unlock(&iommu_cb_set.cb_info[i].lock);
 			return 0;
 		}
@@ -669,9 +671,9 @@ static int cam_smmu_free_scratch_va(struct scratch_mapping *mapping,
 					dma_addr_t addr, size_t size)
 {
 	unsigned int start = (addr - mapping->base) >>
-			     (mapping->order + PAGE_SHIFT);
+		(mapping->order + PAGE_SHIFT);
 	unsigned int count = ((size >> PAGE_SHIFT) +
-			      (1 << mapping->order) - 1) >> mapping->order;
+		(1 << mapping->order) - 1) >> mapping->order;
 
 	if (!addr) {
 		pr_err("Error: Invalid address\n");
@@ -802,6 +804,7 @@ static int cam_smmu_attach(int idx)
 	return ret;
 }
 
+#if 1
 static int cam_smmu_send_syscall_cpp_intf(int vmid, int idx)
 {
 	int rc = 0;
@@ -817,6 +820,7 @@ static int cam_smmu_send_syscall_cpp_intf(int vmid, int idx)
 	desc.args[1] = SCM_BUFFER_PHYS(&sid_info);
 	desc.args[2] = sizeof(uint32_t);
 	desc.args[3] = vmid;
+
 	/*
 	 * Syscall to hypervisor to switch CPP SID's
 	 * between secure and non-secure contexts
@@ -829,6 +833,7 @@ static int cam_smmu_send_syscall_cpp_intf(int vmid, int idx)
 	}
 	return rc;
 }
+#endif
 
 static int cam_smmu_send_syscall_pix_intf(int vmid, int idx)
 {
@@ -849,6 +854,7 @@ static int cam_smmu_send_syscall_pix_intf(int vmid, int idx)
 	desc.args[1] = SCM_BUFFER_PHYS(sid_info);
 	desc.args[2] = sizeof(uint32_t) * 2;
 	desc.args[3] = vmid;
+
 	/*
 	 * Syscall to hypervisor to switch VFE SID's
 	 * between secure and non-secure contexts
@@ -877,22 +883,54 @@ static int cam_smmu_detach_device(int idx)
 
 static int cam_smmu_attach_sec_cpp(int idx)
 {
+	int32_t rc = 0;
+
 	/*
 	 * When switching to secure, detach CPP NS, do scm call
 	 * with CPP SID and no need of attach again, because
 	 * all cpp sids are shared in SCM call. so no need of
 	 * attach again.
 	 */
-
 	if (cam_smmu_send_syscall_cpp_intf(VMID_CP_CAMERA, idx)) {
 		pr_err("error: syscall failed\n");
 		return -EINVAL;
 	}
+
+	rc = msm_camera_tz_set_mode(MSM_CAMERA_TZ_MODE_SECURE,
+		MSM_CAMERA_TZ_HW_BLOCK_CPP);
+	if (rc != 0) {
+		pr_err("secure mode TA notification for cpp unsuccessful, rc %d\n",
+			rc);
+		/*
+		 * Although the TA notification failed, the flow should proceed
+		 * without returning an error as at this point cpp had already
+		 * entered the secure mode.
+		 */
+	}
+
+	iommu_cb_set.cb_info[idx].state = CAM_SMMU_ATTACH;
+
 	return 0;
 }
 
 static int cam_smmu_detach_sec_cpp(int idx)
 {
+	int32_t rc = 0;
+
+	rc = msm_camera_tz_set_mode(MSM_CAMERA_TZ_MODE_NON_SECURE,
+		MSM_CAMERA_TZ_HW_BLOCK_CPP);
+	if (rc != 0) {
+		pr_err("secure mode TA notification for cpp unsuccessful, rc %d\n",
+			rc);
+		/*
+		 * Although the TA notification failed, the flow should proceed
+		 * without returning an error, as at this point cpp is in secure
+		 * mode and should be switched to non-secure regardless
+		 */
+	}
+
+	iommu_cb_set.cb_info[idx].state = CAM_SMMU_DETACH;
+
 	/*
 	 * When exiting secure, do scm call to attach
 	 * with CPP SID in NS mode.
@@ -906,6 +944,8 @@ static int cam_smmu_detach_sec_cpp(int idx)
 
 static int cam_smmu_attach_sec_vfe_ns_stats(int idx)
 {
+	int32_t rc = 0;
+
 	/*
 	 *When switching to secure, for secure pixel and non-secure stats
 	 *localizing scm/attach of non-secure SID's in attach secure
@@ -921,11 +961,38 @@ static int cam_smmu_attach_sec_vfe_ns_stats(int idx)
 			return -EINVAL;
 		}
 	}
+
+	rc = msm_camera_tz_set_mode(MSM_CAMERA_TZ_MODE_SECURE,
+		MSM_CAMERA_TZ_HW_BLOCK_ISP);
+	if (rc != 0) {
+		pr_err("secure mode TA notification for vfe unsuccessful, rc %d\n",
+			rc);
+		/*
+		 * Although the TA notification failed, the flow should proceed
+		 * without returning an error as at this point vfe had already
+		 * entered the secure mode
+		 */
+	}
+
 	return 0;
 }
 
 static int cam_smmu_detach_sec_vfe_ns_stats(int idx)
 {
+	int32_t rc = 0;
+
+	rc = msm_camera_tz_set_mode(MSM_CAMERA_TZ_MODE_NON_SECURE,
+		MSM_CAMERA_TZ_HW_BLOCK_ISP);
+	if (rc != 0) {
+		pr_err("secure mode TA notification for vfe unsuccessful, rc %d\n",
+			rc);
+		/*
+		 * Although the TA notification failed, the flow should proceed
+		 * without returning an error, as at this point vfe is in secure
+		 * mode and should be switched to non-secure regardless
+		 */
+	}
+
 	/*
 	 *While exiting from secure mode for secure pixel and non-secure stats,
 	 *localizing detach/scm of non-secure SID's to detach secure
@@ -953,6 +1020,12 @@ static int cam_smmu_map_buffer_and_add_to_list(int idx, int ion_fd,
 	struct dma_buf *buf = NULL;
 	struct dma_buf_attachment *attach = NULL;
 	struct sg_table *table = NULL;
+
+	if (!paddr_ptr) {
+		pr_err("Error: Input pointer invalid\n");
+		rc = -EINVAL;
+		goto err_out;
+	}
 
 	/* allocate memory for each buffer information */
 	buf = dma_buf_get(ion_fd);
@@ -1189,6 +1262,24 @@ static enum cam_smmu_buf_state cam_smmu_check_fd_in_list(int idx,
 	return CAM_SMMU_BUFF_NOT_EXIST;
 }
 
+static enum cam_smmu_buf_state cam_smmu_stage2_check_fd_in_list(int idx,
+					int ion_fd, dma_addr_t *paddr_ptr,
+					size_t *len_ptr)
+{
+	struct cam_sec_buff_info *mapping = NULL;
+	list_for_each_entry(mapping,
+			&iommu_cb_set.cb_info[idx].smmu_buf_list,
+			list) {
+		if (mapping->ion_fd == ion_fd) {
+			mapping->ref_count++;
+			*paddr_ptr = mapping->paddr;
+			*len_ptr = mapping->len;
+			return CAM_SMMU_BUFF_EXIST;
+		}
+	}
+	return CAM_SMMU_BUFF_NOT_EXIST;
+}
+
 int cam_smmu_get_handle(char *identifier, int *handle_ptr)
 {
 	int ret = 0;
@@ -1270,10 +1361,10 @@ int cam_smmu_ops(int handle, enum cam_smmu_ops_param ops)
 EXPORT_SYMBOL(cam_smmu_ops);
 
 static int cam_smmu_alloc_scratch_buffer_add_to_list(int idx,
-					      size_t virt_len,
-					      size_t phys_len,
-					      unsigned int iommu_dir,
-					      dma_addr_t *virt_addr)
+					size_t virt_len,
+					size_t phys_len,
+					unsigned int iommu_dir,
+					dma_addr_t *virt_addr)
 {
 	unsigned long nents = virt_len / phys_len;
 	struct cam_dma_buff_info *mapping_info = NULL;
@@ -1472,7 +1563,7 @@ int cam_smmu_get_phy_addr_scratch(int handle,
 
 	CDBG("%s: smmu handle = %x, idx = %d, dir = %d\n",
 		__func__, handle, idx, dir);
-	CDBG("%s: virt_len = %zx, phys_len  = %zx\n",
+	CDBG("%s: virt_len = %zx, phys_len = %zx\n",
 		__func__, phys_len, virt_len);
 
 	if (iommu_cb_set.cb_info[idx].state != CAM_SMMU_ATTACH) {
@@ -1699,7 +1790,7 @@ int cam_smmu_alloc_get_stage2_scratch_mem(int handle,
 		return -EINVAL;
 	}
 	*sc_handle = ion_alloc(client, SZ_2M, SZ_2M,
-				ION_HEAP(ION_SECURE_DISPLAY_HEAP_ID),
+				ION_HEAP(/*ION_SECURE_DISPLAY_HEAP_ID*/ION_SECURE_CAMERA_SCRATCH_HEAP_ID),
 				ION_FLAG_SECURE | ION_FLAG_CP_CAMERA);
 	if (IS_ERR_OR_NULL((void *) (*sc_handle))) {
 		rc = -ENOMEM;
@@ -1912,7 +2003,7 @@ int cam_smmu_get_stage2_phy_addr(int handle,
 		goto get_addr_end;
 	}
 
-	buf_state = cam_smmu_check_fd_in_list(idx, ion_fd, paddr_ptr, len_ptr);
+	buf_state = cam_smmu_stage2_check_fd_in_list(idx, ion_fd, paddr_ptr, len_ptr);
 	if (buf_state == CAM_SMMU_BUFF_EXIST) {
 		CDBG("ion_fd:%d already in the list, give same addr back",
 				 ion_fd);
@@ -2372,4 +2463,3 @@ module_init(cam_smmu_init_module);
 module_exit(cam_smmu_exit_module);
 MODULE_DESCRIPTION("MSM Camera SMMU driver");
 MODULE_LICENSE("GPL v2");
-

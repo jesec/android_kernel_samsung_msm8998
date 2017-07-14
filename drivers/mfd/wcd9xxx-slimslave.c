@@ -1,4 +1,4 @@
-/* Copyright (c) 2012-2016, The Linux Foundation. All rights reserved.
+/* Copyright (c) 2012-2017, The Linux Foundation. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -13,6 +13,8 @@
 #include <linux/mutex.h>
 #include <linux/mfd/wcd9xxx/wcd9xxx-slimslave.h>
 #include <linux/mfd/wcd9xxx/wcd9xxx_registers.h>
+
+#define SB_PGD_PORT_TX_OR_UR_CFG(port)  (0x1F0 + port)
 
 struct wcd9xxx_slim_sch {
 	u16 rx_port_ch_reg_base;
@@ -62,6 +64,10 @@ int wcd9xxx_init_slimslave(struct wcd9xxx *wcd9xxx, u8 wcd9xxx_pgd_la,
 		goto err;
 	}
 
+	if (!rx_num || rx_num > wcd9xxx->num_rx_port) {
+		pr_err("%s: invalid rx num %d\n", __func__, rx_num);
+		return -EINVAL;
+	}
 	if (wcd9xxx->rx_chs) {
 		wcd9xxx->num_rx_port = rx_num;
 		for (i = 0; i < rx_num; i++) {
@@ -84,6 +90,10 @@ int wcd9xxx_init_slimslave(struct wcd9xxx *wcd9xxx, u8 wcd9xxx_pgd_la,
 			wcd9xxx->num_rx_port);
 	}
 
+	if (!tx_num || tx_num > wcd9xxx->num_tx_port) {
+		pr_err("%s: invalid tx num %d\n", __func__, tx_num);
+		return -EINVAL;
+	}
 	if (wcd9xxx->tx_chs) {
 		wcd9xxx->num_tx_port = tx_num;
 		for (i = 0; i < tx_num; i++) {
@@ -304,6 +314,23 @@ err:
 }
 EXPORT_SYMBOL_GPL(wcd9xxx_cfg_slim_sch_rx);
 
+static void wcd9xxx_slim_auto_recovery_cfg(struct wcd9xxx *wcd9xxx,
+					   u16 codec_port)
+{
+	int ret;
+
+	if (wcd9xxx->codec_type->id_major != TAVIL_MAJOR)
+		return;
+
+	ret = wcd9xxx_interface_reg_write(wcd9xxx,
+			SB_PGD_PORT_TX_OR_UR_CFG(codec_port),
+			0x02);
+	if (ret < 0) {
+		pr_err("%s:auto_recovery set failure for port[%d] ret[%d]",
+			__func__, codec_port, ret);
+	}
+}
+
 /* Enable slimbus slave device for RX path */
 int wcd9xxx_cfg_slim_sch_tx(struct wcd9xxx *wcd9xxx,
 			    struct list_head *wcd9xxx_ch_list,
@@ -355,6 +382,9 @@ int wcd9xxx_cfg_slim_sch_tx(struct wcd9xxx *wcd9xxx,
 		codec_port = tx->port;
 		pr_debug("%s: codec_port %d tx 0x%p, payload 0x%x\n",
 			 __func__, codec_port, tx, payload);
+
+		wcd9xxx_slim_auto_recovery_cfg(wcd9xxx, codec_port);
+
 		/* write to interface device */
 		ret = wcd9xxx_interface_reg_write(wcd9xxx,
 				SB_PGD_TX_PORT_MULTI_CHANNEL_0(codec_port),

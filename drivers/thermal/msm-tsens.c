@@ -1,4 +1,4 @@
-/* Copyright (c) 2012-2016, The Linux Foundation. All rights reserved.
+/* Copyright (c) 2012-2017, The Linux Foundation. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -719,10 +719,8 @@
 #define TSENS_DEBUG_OFFSET_WORD3	0xc
 #define TSENS_DEBUG_OFFSET_ROW		0x10
 #define TSENS_DEBUG_DECIDEGC		-950
-#define TSENS_DEBUG_MIN_CYCLE		63000
-#define TSENS_DEBUG_MAX_CYCLE		64000
-#define TSENS_DEBUG_POLL_MIN		200000
-#define TSENS_DEBUG_POLL_MAX		210000
+#define TSENS_DEBUG_CYCLE_MS		64
+#define TSENS_DEBUG_POLL_MS		200
 #define TSENS_DEBUG_BUS_ID2_MIN_CYCLE	50
 #define TSENS_DEBUG_BUS_ID2_MAX_CYCLE	51
 #define TSENS_DEBUG_ID_MASK_1_4		0xffffffe1
@@ -2028,8 +2026,7 @@ static void tsens_poll(struct work_struct *work)
 	spin_unlock_irqrestore(&tmdev->tsens_crit_lock, flags);
 
 	if (tmdev->tsens_critical_poll) {
-		usleep_range(TSENS_DEBUG_POLL_MIN,
-				TSENS_DEBUG_POLL_MAX);
+		msleep(TSENS_DEBUG_POLL_MS);
 		sensor_status_addr = TSENS_TM_SN_STATUS(tmdev->tsens_addr);
 
 		spin_lock_irqsave(&tmdev->tsens_crit_lock, flags);
@@ -2183,8 +2180,7 @@ debug_start:
 				offset += TSENS_DEBUG_OFFSET_ROW;
 			}
 			loop++;
-			usleep_range(TSENS_DEBUG_MIN_CYCLE,
-				TSENS_DEBUG_MAX_CYCLE);
+			msleep(TSENS_DEBUG_CYCLE_MS);
 		}
 		BUG();
 	}

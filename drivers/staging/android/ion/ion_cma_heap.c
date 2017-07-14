@@ -283,7 +283,7 @@ static int ion_secure_cma_allocate(struct ion_heap *heap,
 	if (dest_vm == VMID_CP_SEC_DISPLAY)
 		dest_perms = PERM_READ;
 	else
-		dest_perms = PERM_READ | PERM_WRITE;
+	dest_perms = PERM_READ | PERM_WRITE;
 
 	ret = ion_cma_allocate(heap, buffer, len, align, flags);
 	if (ret) {
@@ -305,15 +305,37 @@ err:
 	return ret;
 }
 
+static int ion_secure_cma_mmap(struct ion_heap *mapper, struct ion_buffer *buffer,
+			struct vm_area_struct *vma)
+{
+	pr_info("%s: Mapping from secure heap %s disallowed\n",
+		__func__, mapper->name);
+	return -EINVAL;
+}
+
+static void *ion_secure_cma_map_kernel(struct ion_heap *heap,
+				struct ion_buffer *buffer)
+{
+	pr_info("%s: Kernel mapping from secure heap %s disallowed\n",
+		__func__, heap->name);
+	return ERR_PTR(-EINVAL);
+}
+
+static void ion_secure_cma_unmap_kernel(struct ion_heap *heap,
+				 struct ion_buffer *buffer)
+{
+	return;
+}
+
 static struct ion_heap_ops ion_secure_cma_ops = {
 	.allocate = ion_secure_cma_allocate,
 	.free = ion_secure_cma_free,
 	.map_dma = ion_cma_heap_map_dma,
 	.unmap_dma = ion_cma_heap_unmap_dma,
 	.phys = ion_cma_phys,
-	.map_user = ion_cma_mmap,
-	.map_kernel = ion_cma_map_kernel,
-	.unmap_kernel = ion_cma_unmap_kernel,
+	.map_user = ion_secure_cma_mmap,
+	.map_kernel = ion_secure_cma_map_kernel,
+	.unmap_kernel = ion_secure_cma_unmap_kernel,
 	.print_debug = ion_cma_print_debug,
 };
 

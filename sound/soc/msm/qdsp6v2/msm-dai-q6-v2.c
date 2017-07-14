@@ -1,4 +1,4 @@
-/* Copyright (c) 2012-2016, The Linux Foundation. All rights reserved.
+/* Copyright (c) 2012-2017, The Linux Foundation. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -1634,7 +1634,7 @@ static int msm_dai_q6_usb_audio_hw_params(struct snd_pcm_hw_params *params,
 	dai_data->port_config.usb_audio.num_channels = dai_data->channels;
 	dai_data->port_config.usb_audio.sample_rate = dai_data->rate;
 
-	dev_dbg(dai->dev, "%s: dev_id[0x%x] bit_wd[%hu] format[%hu]\n"
+	dev_info(dai->dev, "%s: dev_id[0x%x] bit_wd[%hu] format[%hu]\n"
 		"num_channel %hu  sample_rate %d\n", __func__,
 		dai_data->port_config.usb_audio.dev_token,
 		dai_data->port_config.usb_audio.bit_width,
@@ -1888,6 +1888,11 @@ static int msm_dai_q6_set_channel_map(struct snd_soc_dai *dai,
 			pr_err("%s: rx slot not found\n", __func__);
 			return -EINVAL;
 		}
+		if (rx_num > AFE_PORT_MAX_AUDIO_CHAN_CNT) {
+			pr_err("%s: invalid rx num %d\n", __func__, rx_num);
+			return -EINVAL;
+		}
+
 		for (i = 0; i < rx_num; i++) {
 			dai_data->port_config.slim_sch.shared_ch_mapping[i] =
 			    rx_slot[i];
@@ -1920,6 +1925,11 @@ static int msm_dai_q6_set_channel_map(struct snd_soc_dai *dai,
 			pr_err("%s: tx slot not found\n", __func__);
 			return -EINVAL;
 		}
+		if (tx_num > AFE_PORT_MAX_AUDIO_CHAN_CNT) {
+			pr_err("%s: invalid tx num %d\n", __func__, tx_num);
+			return -EINVAL;
+		}
+
 		for (i = 0; i < tx_num; i++) {
 			dai_data->port_config.slim_sch.shared_ch_mapping[i] =
 			    tx_slot[i];
@@ -2027,7 +2037,7 @@ static int msm_dai_q6_usb_audio_cfg_put(struct snd_kcontrol *kcontrol,
 
 	if (dai_data) {
 		dai_data->port_config.usb_audio.dev_token = val;
-		pr_debug("%s: dev_token = 0x%x\n",  __func__,
+		pr_info("%s: dev_token = 0x%x\n",  __func__,
 				 dai_data->port_config.usb_audio.dev_token);
 	} else {
 		pr_err("%s: dai_data is NULL\n", __func__);

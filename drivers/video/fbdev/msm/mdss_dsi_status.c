@@ -158,6 +158,10 @@ static int fb_event_callback(struct notifier_block *self,
 		return NOTIFY_DONE;
 	}
 
+#if defined(CONFIG_FB_MSM_MDSS_SAMSUNG)
+	ctrl_pdata->panel_data.event_handler(&ctrl_pdata->panel_data, MDSS_SAMSUNG_EVENT_FB_EVENT_CALLBACK, &interval );
+#endif
+
 	pdata->mfd = evdata->info->par;
 	if (event == FB_EVENT_BLANK) {
 		int *blank = evdata->data;
@@ -167,6 +171,9 @@ static int fb_event_callback(struct notifier_block *self,
 
 		switch (*blank) {
 		case FB_BLANK_UNBLANK:
+#if defined(CONFIG_FB_MSM_MDSS_SAMSUNG)
+			if (!ctrl_pdata->status_mode == ESD_REG_IRQ)
+#endif
 			schedule_delayed_work(&pdata->check_status,
 				msecs_to_jiffies(interval));
 			break;
@@ -174,6 +181,11 @@ static int fb_event_callback(struct notifier_block *self,
 		case FB_BLANK_HSYNC_SUSPEND:
 		case FB_BLANK_VSYNC_SUSPEND:
 		case FB_BLANK_NORMAL:
+#if defined(CONFIG_FB_MSM_MDSS_SAMSUNG)
+			if (ctrl_pdata->status_mode == ESD_REG_IRQ)
+				cancel_work_sync(&pdata->check_status.work);
+			else
+#endif
 			cancel_delayed_work(&pdata->check_status);
 			break;
 		default:

@@ -357,6 +357,20 @@ err:
 	return ret;
 }
 
+enum dma_cont_reason {
+	DMA_CONT_SUCCESS,
+	DMA_CONT_EBUSY,
+	DMA_CONT_ENOMEM,
+	DMA_CONT_EOTHER,
+};
+
+static const char *dma_cont_reason_str[] = {
+	"Success",
+	"EBUSY",
+	"ENOMEM",
+	"Other Error",
+};
+
 /**
  * cma_alloc() - allocate pages from contiguous area
  * @cma:   Contiguous memory region for which the allocation is performed.
@@ -375,6 +389,8 @@ struct page *cma_alloc(struct cma *cma, size_t count, unsigned int align)
 	struct page *page = NULL;
 	int ret;
 	int retry_after_sleep = 0;
+	enum dma_cont_reason fail_reason = DMA_CONT_SUCCESS;
+	unsigned int nr, nr_total = 0;
 
 	if (!cma || !cma->count)
 		return NULL;
@@ -412,8 +428,18 @@ struct page *cma_alloc(struct cma *cma, size_t count, unsigned int align)
 				msleep(100);
 				retry_after_sleep++;
 				continue;
+			} else if (start != 0 && retry_after_sleep < 6) {
+				start = 0;
+				mutex_unlock(&cma->lock);
+				msleep(500);
+				retry_after_sleep++;
+				continue;
 			} else {
 				mutex_unlock(&cma->lock);
+				if (start == 0)
+					fail_reason = DMA_CONT_ENOMEM;
+				else
+					fail_reason = DMA_CONT_EBUSY;
 				break;
 			}
 		}
@@ -430,13 +456,16 @@ struct page *cma_alloc(struct cma *cma, size_t count, unsigned int align)
 		ret = alloc_contig_range(pfn, pfn + count, MIGRATE_CMA);
 		mutex_unlock(&cma_mutex);
 		if (ret == 0) {
+			fail_reason = DMA_CONT_SUCCESS;
 			page = pfn_to_page(pfn);
 			break;
 		}
 
 		cma_clear_bitmap(cma, pfn, count);
-		if (ret != -EBUSY)
+		if (ret != -EBUSY) {
+			fail_reason = DMA_CONT_EOTHER;
 			break;
+		}
 
 		pr_debug("%s(): memory range at %p is busy, retrying\n",
 			 __func__, pfn_to_page(pfn));
@@ -449,6 +478,30 @@ struct page *cma_alloc(struct cma *cma, size_t count, unsigned int align)
 	trace_cma_alloc(pfn, page, count, align);
 
 	pr_debug("%s(): returned %p\n", __func__, page);
+	if (fail_reason != DMA_CONT_SUCCESS)
+		pr_info("%s: alloc failed, req-size: %zu pages, reason %s (%d)\n",
+			__func__, count,
+			dma_cont_reason_str[fail_reason], fail_reason);
+	if (fail_reason == DMA_CONT_ENOMEM) {
+		mutex_lock(&cma->lock);
+		printk("number of available pages: ");
+		start = 0;
+		for (;;) {
+			bitmap_no = bitmap_find_next_zero_area_and_size(cma->bitmap,
+						cma->count, start, &nr);
+			if (bitmap_no >= cma->count)
+				break;
+			if (nr_total == 0)
+				printk("%u", nr);
+			else
+				printk("+%u", nr);
+			nr_total += nr;
+			start = bitmap_no + nr;
+		}
+		printk("=>%u pages, total: %lu pages\n", nr_total, cma->count);
+		mutex_unlock(&cma->lock);
+	}
+
 	return page;
 }
 

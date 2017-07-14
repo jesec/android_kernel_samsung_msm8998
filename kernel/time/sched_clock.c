@@ -18,6 +18,7 @@
 #include <linux/sched_clock.h>
 #include <linux/seqlock.h>
 #include <linux/bitops.h>
+#include <asm/smp.h>
 
 /**
  * struct clock_read_data - data required to read from sched_clock()
@@ -44,6 +45,10 @@ struct clock_read_data {
 	u32 shift;
 };
 
+#define DEBUG_ARRY_SZ 200
+static u64 timer_array[CONFIG_NR_CPUS][DEBUG_ARRY_SZ] = {{0}} ;
+static u64 timer_array_cyc_to_ns[CONFIG_NR_CPUS][DEBUG_ARRY_SZ] = {{0}} ;
+static int timer_index[CONFIG_NR_CPUS] = {0};
 /**
  * struct clock_data - all data needed for sched_clock() (including
  *                     registration of a new clock source)
@@ -96,17 +101,25 @@ static inline u64 notrace cyc_to_ns(u64 cyc, u32 mult, u32 shift)
 
 unsigned long long notrace sched_clock(void)
 {
-	u64 cyc, res;
+	u64 cyc, tmp_cyc, res, tmp_cyc_to_ns;
 	unsigned long seq;
 	struct clock_read_data *rd;
+	int cpu = raw_smp_processor_id();
 
 	do {
 		seq = raw_read_seqcount(&cd.seq);
 		rd = cd.read_data + (seq & 1);
 
-		cyc = (rd->read_sched_clock() - rd->epoch_cyc) &
+		tmp_cyc = rd->read_sched_clock();
+		cyc = (tmp_cyc - rd->epoch_cyc) &
 		      rd->sched_clock_mask;
-		res = rd->epoch_ns + cyc_to_ns(cyc, rd->mult, rd->shift);
+		tmp_cyc_to_ns = cyc_to_ns(cyc, rd->mult, rd->shift);
+		res = rd->epoch_ns + tmp_cyc_to_ns;
+
+		timer_array[cpu][timer_index[cpu]] = tmp_cyc;
+		timer_array_cyc_to_ns[cpu][timer_index[cpu]] = tmp_cyc_to_ns;
+		timer_index[cpu] = (timer_index[cpu] + 1) % DEBUG_ARRY_SZ;
+
 	} while (read_seqcount_retry(&cd.seq, seq));
 
 	return res;

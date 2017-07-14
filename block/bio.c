@@ -581,6 +581,9 @@ void __bio_clone_fast(struct bio *bio, struct bio *bio_src)
 	 */
 	bio->bi_bdev = bio_src->bi_bdev;
 	bio_set_flag(bio, BIO_CLONED);
+#ifdef CONFIG_JOURNAL_DATA_TAG
+	bio->bi_flags |= bio_src->bi_flags & BIO_JOURNAL_TAG_MASK;
+#endif
 	bio->bi_rw = bio_src->bi_rw;
 	bio->bi_iter = bio_src->bi_iter;
 	bio->bi_io_vec = bio_src->bi_io_vec;
@@ -667,6 +670,9 @@ struct bio *bio_clone_bioset(struct bio *bio_src, gfp_t gfp_mask,
 	bio->bi_rw		= bio_src->bi_rw;
 	bio->bi_iter.bi_sector	= bio_src->bi_iter.bi_sector;
 	bio->bi_iter.bi_size	= bio_src->bi_iter.bi_size;
+#ifdef CONFIG_JOURNAL_DATA_TAG
+	bio->bi_flags |= bio_src->bi_flags & BIO_JOURNAL_TAG_MASK;
+#endif
 
 	if (bio->bi_rw & REQ_DISCARD)
 		goto integrity_clone;

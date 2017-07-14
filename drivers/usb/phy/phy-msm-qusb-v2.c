@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2014-2016, The Linux Foundation. All rights reserved.
+ * Copyright (c) 2014-2017, The Linux Foundation. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -50,6 +50,15 @@
 #define DPSE_INTERRUPT			BIT(0)
 
 #define QUSB2PHY_PORT_TUNE1		0x23c
+#define QUSB2PHY_TEST1			0x24C
+
+#define QUSB2PHY_1P2_VOL_MIN           1200000 /* uV */
+#define QUSB2PHY_1P2_VOL_MAX           1200000 /* uV */
+#define QUSB2PHY_1P2_HPM_LOAD          23000
+#ifdef CONFIG_USB_ANDROID_SAMSUNG_COMPOSITE
+#define SS_SYNC_VALUE			0xa
+#define SS_HIGH_TUNE1			0xf
+#endif
 
 #define QUSB2PHY_1P8_VOL_MIN           1800000 /* uV */
 #define QUSB2PHY_1P8_VOL_MAX           1800000 /* uV */
@@ -83,6 +92,7 @@ struct qusb_phy {
 	struct regulator	*vdd;
 	struct regulator	*vdda33;
 	struct regulator	*vdda18;
+	struct regulator	*vdda12;
 	int			vdd_levels[3]; /* none, low, high */
 	int			init_seq_len;
 	int			*qusb_phy_init_seq;
@@ -184,10 +194,30 @@ static int qusb_phy_enable_power(struct qusb_phy *qphy, bool on,
 		}
 	}
 
+	ret = regulator_set_load(qphy->vdda12, QUSB2PHY_1P2_HPM_LOAD);
+	if (ret < 0) {
+		dev_err(qphy->phy.dev, "Unable to set HPM of vdda12:%d\n", ret);
+		goto disable_vdd;
+	}
+
+	ret = regulator_set_voltage(qphy->vdda12, QUSB2PHY_1P2_VOL_MIN,
+						QUSB2PHY_1P2_VOL_MAX);
+	if (ret) {
+		dev_err(qphy->phy.dev,
+				"Unable to set voltage for vdda12:%d\n", ret);
+		goto put_vdda12_lpm;
+	}
+
+	ret = regulator_enable(qphy->vdda12);
+	if (ret) {
+		dev_err(qphy->phy.dev, "Unable to enable vdda12:%d\n", ret);
+		goto unset_vdda12;
+	}
+
 	ret = regulator_set_load(qphy->vdda18, QUSB2PHY_1P8_HPM_LOAD);
 	if (ret < 0) {
 		dev_err(qphy->phy.dev, "Unable to set HPM of vdda18:%d\n", ret);
-		goto disable_vdd;
+		goto disable_vdda12;
 	}
 
 	ret = regulator_set_voltage(qphy->vdda18, QUSB2PHY_1P8_VOL_MIN,
@@ -261,6 +291,19 @@ put_vdda18_lpm:
 	ret = regulator_set_load(qphy->vdda18, 0);
 	if (ret < 0)
 		dev_err(qphy->phy.dev, "Unable to set LPM of vdda18\n");
+disable_vdda12:
+	ret = regulator_disable(qphy->vdda12);
+	if (ret)
+		dev_err(qphy->phy.dev, "Unable to disable vdda12:%d\n", ret);
+unset_vdda12:
+	ret = regulator_set_voltage(qphy->vdda12, 0, QUSB2PHY_1P2_VOL_MAX);
+	if (ret)
+		dev_err(qphy->phy.dev,
+			"Unable to set (0) voltage for vdda12:%d\n", ret);
+put_vdda12_lpm:
+	ret = regulator_set_load(qphy->vdda12, 0);
+	if (ret < 0)
+		dev_err(qphy->phy.dev, "Unable to set LPM of vdda12\n");
 
 disable_vdd:
 	if (toggle_vdd) {
@@ -348,6 +391,16 @@ static void qusb_phy_get_tune1_param(struct qusb_phy *qphy)
 	qphy->tune_val = TUNE_VAL_MASK(qphy->tune_val,
 				qphy->efuse_bit_pos, bit_mask);
 	reg = readb_relaxed(qphy->base + QUSB2PHY_PORT_TUNE1);
+
+#ifdef CONFIG_USB_ANDROID_SAMSUNG_COMPOSITE
+	if(qphy->tune_val + SS_SYNC_VALUE >= SS_HIGH_TUNE1) {
+		pr_info("fail to apply SS_SYNC_VALUE. Qc efuse value is too high\n");
+		qphy->tune_val = SS_HIGH_TUNE1;
+	}
+	else {
+		qphy->tune_val += SS_SYNC_VALUE;
+	}
+#endif
 	if (qphy->tune_val) {
 		reg = reg & 0x0f;
 		reg |= (qphy->tune_val << 4);
@@ -360,9 +413,9 @@ static void qusb_phy_write_seq(void __iomem *base, u32 *seq, int cnt,
 {
 	int i;
 
-	pr_debug("Seq count:%d\n", cnt);
+	pr_info("Seq count:%d\n", cnt);
 	for (i = 0; i < cnt; i = i+2) {
-		pr_debug("write 0x%02x to 0x%02x\n", seq[i], seq[i+1]);
+		pr_info("write 0x%02x to 0x%02x\n", seq[i], seq[i+1]);
 		writel_relaxed(seq[i], base + seq[i+1]);
 		if (delay)
 			usleep_range(delay, (delay + 2000));
@@ -375,7 +428,7 @@ static void qusb_phy_host_init(struct usb_phy *phy)
 	int ret;
 	struct qusb_phy *qphy = container_of(phy, struct qusb_phy, phy);
 
-	dev_dbg(phy->dev, "%s\n", __func__);
+	dev_info(phy->dev, "%s\n", __func__);
 
 	/* Perform phy reset */
 	ret = reset_control_assert(qphy->phy_reset);
@@ -386,8 +439,30 @@ static void qusb_phy_host_init(struct usb_phy *phy)
 	if (ret)
 		dev_err(phy->dev, "%s: phy_reset deassert failed\n", __func__);
 
+	/* Disable the PHY */ 
+	writel_relaxed(readl_relaxed(qphy->base + QUSB2PHY_PWR_CTRL1) | 
+	PWR_CTRL1_POWR_DOWN, 
+	qphy->base + QUSB2PHY_PWR_CTRL1); 
+
 	qusb_phy_write_seq(qphy->base, qphy->qusb_phy_host_init_seq,
 			qphy->host_init_seq_len, 0);
+	if (qphy->efuse_reg) {
+		if (!qphy->tune_val)
+			qusb_phy_get_tune1_param(qphy);
+
+		pr_info("%s(): Programming TUNE1 parameter as:%x\n", __func__,
+				qphy->tune_val);
+		writel_relaxed(qphy->tune_val,
+				qphy->base + QUSB2PHY_PORT_TUNE1);
+	}
+
+	/* ensure above writes are completed before re-enabling PHY */ 
+	wmb(); 
+
+	/* Enable the PHY */ 
+	writel_relaxed(readl_relaxed(qphy->base + QUSB2PHY_PWR_CTRL1) & 
+	~PWR_CTRL1_POWR_DOWN, 
+	qphy->base + QUSB2PHY_PWR_CTRL1); 
 
 	/* Ensure above write is completed before turning ON ref clk */
 	wmb();
@@ -409,7 +484,7 @@ static int qusb_phy_init(struct usb_phy *phy)
 	int ret;
 	u8 reg;
 
-	dev_dbg(phy->dev, "%s\n", __func__);
+	dev_info(phy->dev, "%s\n", __func__);
 
 	ret = qusb_phy_enable_power(qphy, true, true);
 	if (ret)
@@ -561,7 +636,8 @@ static int qusb_phy_set_suspend(struct usb_phy *phy, int suspend)
 				readl_relaxed(qphy->base +
 					QUSB2PHY_PLL_ANALOG_CONTROLS_TWO);
 
-			writel_relaxed(0x1b,
+			/* use CSR & switch to SE clk */
+			writel_relaxed(0xb,
 				qphy->base + QUSB2PHY_PLL_ANALOG_CONTROLS_TWO);
 
 			/* enable clock bypass */
@@ -590,6 +666,14 @@ static int qusb_phy_set_suspend(struct usb_phy *phy, int suspend)
 
 			writel_relaxed(intr_mask,
 				qphy->base + QUSB2PHY_INTR_CTRL);
+
+			/* enable phy auto-resume */
+			writel_relaxed(0x91,
+					qphy->base + QUSB2PHY_TEST1);
+			/* flush the previous write before next write */
+			wmb();
+			writel_relaxed(0x90,
+				qphy->base + QUSB2PHY_TEST1);
 
 			dev_dbg(phy->dev, "%s: intr_mask = %x\n",
 			__func__, intr_mask);
@@ -985,6 +1069,12 @@ static int qusb_phy_probe(struct platform_device *pdev)
 		return PTR_ERR(qphy->vdda18);
 	}
 
+	qphy->vdda12 = devm_regulator_get(dev, "vdda12");
+	if (IS_ERR(qphy->vdda12)) {
+		dev_err(dev, "unable to get vdda12 supply\n");
+		return PTR_ERR(qphy->vdda12);
+	}
+
 	platform_set_drvdata(pdev, qphy);
 
 	qphy->phy.label			= "msm-qusb-phy-v2";
@@ -1002,6 +1092,9 @@ static int qusb_phy_probe(struct platform_device *pdev)
 	ret = qusb_phy_regulator_init(qphy);
 	if (ret)
 		usb_remove_phy(&qphy->phy);
+
+	/* de-asseert clamp dig n to reduce leakage on 1p8 upon boot up */
+	writel_relaxed(0x0, qphy->tcsr_clamp_dig_n);
 
 	return ret;
 }

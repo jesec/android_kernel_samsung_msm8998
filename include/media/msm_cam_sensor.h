@@ -39,6 +39,8 @@ struct msm_camera_sensor_slave_info32 {
 	struct msm_sensor_id_info_t sensor_id_info;
 	struct msm_sensor_power_setting_array32 power_setting_array;
 	uint8_t  is_init_params_valid;
+	unsigned int num_shared_gpios;
+	unsigned int shared_gpios[5];
 	struct msm_sensor_init_params sensor_init_params;
 	enum msm_sensor_output_format_t output_format;
 };
@@ -86,11 +88,32 @@ struct msm_ir_cut_cfg_data_t32 {
 struct eeprom_read_t32 {
 	compat_uptr_t dbuffer;
 	uint32_t num_bytes;
+	uint32_t addr;
+	uint32_t comp_size;
+};
+
+struct eeprom_comp_read_t32 {
+	compat_uptr_t cbuffer;
+	compat_uptr_t dbuffer;
+	uint32_t num_bytes;
+	uint32_t addr;
+	uint32_t comp_size;
 };
 
 struct eeprom_write_t32 {
 	compat_uptr_t dbuffer;
 	uint32_t num_bytes;
+	uint32_t addr;
+	compat_uptr_t write_size;
+	uint8_t compress;
+};
+
+struct eeprom_comp_write_t32 {
+	compat_uptr_t dbuffer;
+	compat_uptr_t cbuffer;
+	uint32_t num_bytes;
+	uint32_t addr;
+	compat_uptr_t write_size;
 };
 
 struct msm_eeprom_info_t32 {
@@ -101,12 +124,15 @@ struct msm_eeprom_info_t32 {
 
 struct msm_eeprom_cfg_data32 {
 	enum eeprom_cfg_type_t cfgtype;
-	uint8_t is_supported;
+	uint16_t is_supported;
 	union {
 		char eeprom_name[MAX_SENSOR_NAME];
 		struct eeprom_get_t get_data;
 		struct eeprom_read_t32 read_data;
+		struct eeprom_comp_read_t32 comp_read_data;
 		struct eeprom_write_t32 write_data;
+		struct eeprom_comp_write_t32 comp_write_data;
+		struct eeprom_erase_t erase_data;
 		struct msm_eeprom_info_t32 eeprom_info;
 	} cfg;
 };
@@ -203,6 +229,9 @@ struct sensorb_cfg_data32 {
 		struct msm_sensor_init_params sensor_init_params;
 		compat_uptr_t                 setting;
 		struct msm_sensor_i2c_sync_params sensor_i2c_sync_params;
+#if 1//defined(CONFIG_SENSOR_RETENTION)
+		uint8_t sensor_retention_mode;
+#endif
 	} cfg;
 };
 
@@ -222,6 +251,9 @@ struct msm_ois_set_info_t32 {
 
 struct msm_ois_cfg_data32 {
 	int cfgtype;
+	uint16_t set_value;
+	compat_uptr_t version;
+	compat_uptr_t ois_cal_info;
 	union {
 		struct msm_ois_set_info_t32 set_info;
 		compat_uptr_t settings;
@@ -244,6 +276,47 @@ struct msm_flash_cfg_data_t32 {
 		compat_uptr_t flash_init_info;
 		compat_uptr_t settings;
 	} cfg;
+#if 1//defined(CONFIG_SAMSUNG_SECURE_CAMERA)
+	int32_t ir_led_config;
+#endif
+};
+
+struct companion_read_cal_data32 {
+	compat_uptr_t cal_data;
+	uint32_t size;
+	uint32_t offset;
+};
+
+struct companion_crc_check_param32 {
+	uint32_t addr;
+	uint32_t count;
+	compat_uptr_t CRC;
+};
+
+struct companion_fw_binary_param32 {
+	compat_uptr_t version;
+	compat_uptr_t buffer;
+	compat_uptr_t sensor_name;
+	uint32_t size;
+	compat_uptr_t hwinfo;
+};
+
+struct companion_cfg_data32 {
+	enum companion_cfg_type_t cfgtype;
+	union {
+		compat_uptr_t setting;
+		uint16_t stream_on;
+		uint16_t wdr_mode;
+		compat_uptr_t stats2;
+		compat_uptr_t dump_buf;
+		compat_uptr_t read_id;
+		compat_uptr_t rev;
+		struct companion_read_cal_data32 read_cal;
+		struct msm_camera_i2c_reg_setting32 mode_setting;
+		struct companion_crc_check_param32 crc_check;
+		struct companion_fw_binary_param32 fw_bin;
+	} cfg;
+	uint16_t isDump;
 };
 
 #define VIDIOC_MSM_ACTUATOR_CFG32 \
@@ -270,11 +343,14 @@ struct msm_flash_cfg_data_t32 {
 #define VIDIOC_MSM_FLASH_CFG32 \
 	_IOWR('V', BASE_VIDIOC_PRIVATE + 13, struct msm_flash_cfg_data_t32)
 
+#define VIDIOC_MSM_COMPANION_IO_CFG32 \
+	_IOWR('V', BASE_VIDIOC_PRIVATE + 14, struct companion_cfg_data32)
+
 #define VIDIOC_MSM_IR_LED_CFG32 \
-	_IOWR('V', BASE_VIDIOC_PRIVATE + 14, struct msm_ir_led_cfg_data_t32)
+	_IOWR('V', BASE_VIDIOC_PRIVATE + 15, struct msm_ir_led_cfg_data_t32)
 
 #define VIDIOC_MSM_IR_CUT_CFG32 \
-	_IOWR('V', BASE_VIDIOC_PRIVATE + 15, struct msm_ir_cut_cfg_data_t32)
+	_IOWR('V', BASE_VIDIOC_PRIVATE + 16, struct msm_ir_cut_cfg_data_t32)
 #endif
 
 #endif

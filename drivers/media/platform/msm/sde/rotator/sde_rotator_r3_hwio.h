@@ -1,4 +1,4 @@
-/* Copyright (c) 2015-2016, The Linux Foundation. All rights reserved.
+/* Copyright (c) 2015-2017, The Linux Foundation. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -235,6 +235,10 @@
 #define ROT_QDSS_CLK_STATUS                      0x18
 #define ROT_QDSS_PULSE_TRIGGER                   0x20
 
+/*
+ * SDE_ROT_VBIF_NRT:
+ */
+#define SDE_ROT_VBIF_NRT_OFFSET                  0
 
 /* REGDMA OP Code */
 #define REGDMA_OP_NOP                   (0 << 28)
@@ -273,5 +277,6 @@
 #define REGDMA_INT_LOW_MASK             0x00000700
 #define REGDMA_INT_ERR_MASK             0x000F0000
 #define REGDMA_TIMESTAMP_REG            ROT_SSPP_TPG_PATTERN_GEN_INIT_VAL
+#define REGDMA_RESET_STATUS_REG         ROT_SSPP_TPG_RGB_MAPPING
 
 #endif /*_SDE_ROTATOR_R3_HWIO_H */

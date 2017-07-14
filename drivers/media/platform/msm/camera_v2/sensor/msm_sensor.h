@@ -91,13 +91,54 @@ struct msm_sensor_ctrl_t {
 	uint32_t is_secure;
 };
 
+#if defined(CONFIG_USE_CAMERA_HW_BIG_DATA)
+#define TRUE 1
+#define FALSE 0
+#define CAM_HW_ERR_CNT_FILE_PATH "/data/camera/camera_hw_err_cnt.dat"
+
+typedef enum
+{
+	HW_PARAMS_CREATED = 0,
+	HW_PARAMS_NOT_CREATED,
+} hw_params_check_type;
+
+struct cam_hw_param {
+	u32 i2c_sensor_err_cnt;
+	u32 i2c_comp_err_cnt;
+	u32 i2c_ois_err_cnt;
+	u32 i2c_af_err_cnt;
+	u32 mipi_sensor_err_cnt;
+	u32 mipi_comp_err_cnt;
+	u16 i2c_chk;
+	u16 mipi_chk;
+	bool need_update_to_file;
+} __attribute__((__packed__));
+    
+struct cam_hw_param_collector {
+	struct cam_hw_param rear_hwparam;
+	struct cam_hw_param front_hwparam;
+	struct cam_hw_param iris_hwparam;
+} __attribute__((__packed__));
+
+void msm_is_sec_init_all(void);
+void msm_is_sec_dbg_check(void);
+void msm_is_sec_init_err_cnt_file(struct cam_hw_param *hw_param);
+void msm_is_sec_copy_err_cnt_from_file(void);
+void msm_is_sec_copy_err_cnt_to_file(void);
+
+int msm_is_sec_file_exist(char *filename, hw_params_check_type chktype);
+int msm_is_sec_get_secure_mode(uint32_t **sec_is_secure);
+int msm_is_sec_get_sensor_position(uint32_t **sensor_position);
+int msm_is_sec_get_rear_hw_param(struct cam_hw_param **hw_param);
+int msm_is_sec_get_front_hw_param(struct cam_hw_param **hw_param);
+int msm_is_sec_get_iris_hw_param(struct cam_hw_param **hw_param);
+#endif
+
 int msm_sensor_config(struct msm_sensor_ctrl_t *s_ctrl, void __user *argp);
 
 int msm_sensor_power_up(struct msm_sensor_ctrl_t *s_ctrl);
 
 int msm_sensor_power_down(struct msm_sensor_ctrl_t *s_ctrl);
-
-int msm_sensor_check_id(struct msm_sensor_ctrl_t *s_ctrl);
 
 int msm_sensor_match_id(struct msm_sensor_ctrl_t *s_ctrl);
 

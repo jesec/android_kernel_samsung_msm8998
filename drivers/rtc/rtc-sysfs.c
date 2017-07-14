@@ -122,6 +122,58 @@ hctosys_show(struct device *dev, struct device_attribute *attr, char *buf)
 }
 static DEVICE_ATTR_RO(hctosys);
 
+#ifdef CONFIG_RTC_AUTO_PWRON
+extern int rtc_get_bootalarm(struct rtc_device *rtc, struct rtc_wkalrm *alarm);
+extern int alarm_set_alarm(char* alarm_data);
+static ssize_t
+alarm_boot_show(struct device *dev, struct device_attribute *attr,
+		char *buf)
+{
+	ssize_t retval;
+	struct rtc_wkalrm alm;
+
+	retval = rtc_get_bootalarm(to_rtc_device(dev), &alm);
+	if (retval) {
+		retval = sprintf(buf, "%d", alm.enabled);
+		pr_info("%s [SAPA] rtc_sysfs_show_wakealarm enabled? : %d\n",__func__,alm.enabled);
+		
+		pr_info("%s [SAPA] %04d-%02d-%02d %02d:%02d:%02d\n", __func__,
+				alm.time.tm_year, alm.time.tm_mon, alm.time.tm_mday,
+				alm.time.tm_hour, alm.time.tm_min, alm.time.tm_sec);
+		
+		return retval;
+	}
+
+	return retval;
+}
+
+static ssize_t
+alarm_boot_store(struct device *dev, struct device_attribute *attr,
+		const char *buf, size_t n)
+{
+	ssize_t retval;
+	char bootalarm_data[14];
+
+	if (n != 14) {
+		dev_err(dev, "%s [SAPA] input format :  0|2010|01|01|00|00\n", __func__);
+		dev_err(dev, "%s [SAPA] input format : en yyyy mm dd hh mm (13 digits)\n", __func__);
+		retval = -EFAULT;
+		return retval;
+	}
+	strlcpy(bootalarm_data, buf, n);
+	dev_info(dev, "%s [SAPA] alarm set on %s(%d)\n", __func__,
+		bootalarm_data, (int)strlen(bootalarm_data));
+	if (alarm_set_alarm(bootalarm_data))
+	{
+		retval = -EFAULT;
+		return retval;
+	}
+
+	return n;
+}
+static DEVICE_ATTR_RW(alarm_boot);
+#endif
+
 static ssize_t
 wakealarm_show(struct device *dev, struct device_attribute *attr, char *buf)
 {
@@ -219,6 +271,9 @@ static struct attribute *rtc_attrs[] = {
 	&dev_attr_max_user_freq.attr,
 	&dev_attr_hctosys.attr,
 	&dev_attr_wakealarm.attr,
+#ifdef CONFIG_RTC_AUTO_PWRON
+	&dev_attr_alarm_boot.attr,
+#endif
 	NULL,
 };
 

@@ -56,6 +56,10 @@
 #include "mdss_smmu.h"
 #include "mdss_mdp.h"
 
+#if defined(CONFIG_FB_MSM_MDSS_SAMSUNG)
+#include "samsung/ss_dsi_panel_common.h" /* UTIL HEADER */
+#endif
+
 #ifdef CONFIG_FB_MSM_TRIPLE_BUFFER
 #define MDSS_FB_NUM 3
 #else
@@ -116,6 +120,9 @@ static int mdss_fb_send_panel_event(struct msm_fb_data_type *mfd,
 					int event, void *arg);
 static void mdss_fb_set_mdp_sync_pt_threshold(struct msm_fb_data_type *mfd,
 		int type);
+#if defined(CONFIG_FB_MSM_MDSS_SAMSUNG)
+struct samsung_display_driver_data* mdss_samsung_get_vdd(struct mdss_mdp_ctl *ctl);
+#endif
 
 static inline void __user *to_user_ptr(uint64_t address)
 {
@@ -281,13 +288,17 @@ static void mdss_fb_set_bl_brightness(struct led_classdev *led_cdev,
 	if (value > mfd->panel_info->brightness_max)
 		value = mfd->panel_info->brightness_max;
 
+#if !defined(CONFIG_FB_MSM_MDSS_SAMSUNG)
 	/* This maps android backlight level 0 to 255 into
 	   driver backlight level 0 to bl_max with rounding */
 	MDSS_BRIGHT_TO_BL(bl_lvl, value, mfd->panel_info->bl_max,
 				mfd->panel_info->brightness_max);
-
 	if (!bl_lvl && value)
 		bl_lvl = 1;
+#else
+	bl_lvl = value;
+#endif
+
 
 	if (!IS_CALIB_MODE_BL(mfd) && (!mfd->ext_bl_ctrl || !value ||
 							!mfd->bl_level)) {
@@ -560,13 +571,22 @@ static ssize_t mdss_fb_get_panel_info(struct device *dev,
 		pinfo->dfps_update == DFPS_IMMEDIATE_PORCH_UPDATE_MODE_VFP)
 		dfps_porch_mode = true;
 
+	pr_info("%s nxstart=%d\nwalign=%d\nystart=%d\n", __func__, pinfo->roi_alignment.xstart_pix_align
+		, pinfo->roi_alignment.width_pix_align, pinfo->roi_alignment.ystart_pix_align);
+
 	ret = scnprintf(buf, PAGE_SIZE,
 			"pu_en=%d\nxstart=%d\nwalign=%d\nystart=%d\nhalign=%d\n"
 			"min_w=%d\nmin_h=%d\nroi_merge=%d\ndyn_fps_en=%d\n"
 			"min_fps=%d\nmax_fps=%d\npanel_name=%s\n"
 			"primary_panel=%d\nis_pluggable=%d\ndisplay_id=%s\n"
 			"is_cec_supported=%d\nis_pingpong_split=%d\n"
-			"dfps_porch_mode=%d\npu_roi_cnt=%d\ndual_dsi=%d",
+			"dfps_porch_mode=%d\npu_roi_cnt=%d\ndual_dsi=%d\n"
+			"is_hdr_enabled=%d\n"
+			"peak_brightness=%d\nblackness_level=%d\n"
+			"white_chromaticity_x=%d\nwhite_chromaticity_y=%d\n"
+			"red_chromaticity_x=%d\nred_chromaticity_y=%d\n"
+			"green_chromaticity_x=%d\ngreen_chromaticity_y=%d\n"
+			"blue_chromaticity_x=%d\nblue_chromaticity_y=%d\n",
 			pinfo->partial_update_enabled,
 			pinfo->roi_alignment.xstart_pix_align,
 			pinfo->roi_alignment.width_pix_align,
@@ -580,7 +600,17 @@ static ssize_t mdss_fb_get_panel_info(struct device *dev,
 			pinfo->is_pluggable, pinfo->display_id,
 			pinfo->is_cec_supported, is_pingpong_split(mfd),
 			dfps_porch_mode, pinfo->partial_update_enabled,
-			is_panel_split(mfd));
+			is_panel_split(mfd), pinfo->hdr_properties.hdr_enabled,
+			pinfo->hdr_properties.peak_brightness,
+			pinfo->hdr_properties.blackness_level,
+			pinfo->hdr_properties.display_primaries[0],
+			pinfo->hdr_properties.display_primaries[1],
+			pinfo->hdr_properties.display_primaries[2],
+			pinfo->hdr_properties.display_primaries[3],
+			pinfo->hdr_properties.display_primaries[4],
+			pinfo->hdr_properties.display_primaries[5],
+			pinfo->hdr_properties.display_primaries[6],
+			pinfo->hdr_properties.display_primaries[7]);
 
 	return ret;
 }
@@ -783,6 +813,16 @@ static ssize_t mdss_fb_get_dfps_mode(struct device *dev,
 	return ret;
 }
 
+static ssize_t mdss_fb_idle_pc_notify(struct device *dev,
+		struct device_attribute *attr, char *buf)
+{
+	int ret;
+
+	ret = scnprintf(buf, PAGE_SIZE, "idle power collapsed\n");
+
+	return ret;
+}
+
 static DEVICE_ATTR(msm_fb_type, S_IRUGO, mdss_fb_get_type, NULL);
 static DEVICE_ATTR(msm_fb_split, S_IRUGO | S_IWUSR, mdss_fb_show_split,
 					mdss_fb_store_split);
@@ -799,6 +839,8 @@ static DEVICE_ATTR(msm_fb_panel_status, S_IRUGO | S_IWUSR,
 	mdss_fb_get_panel_status, mdss_fb_force_panel_dead);
 static DEVICE_ATTR(msm_fb_dfps_mode, S_IRUGO | S_IWUSR,
 	mdss_fb_get_dfps_mode, mdss_fb_change_dfps_mode);
+static DEVICE_ATTR(idle_power_collapse, S_IRUGO, mdss_fb_idle_pc_notify, NULL);
+
 static struct attribute *mdss_fb_attrs[] = {
 	&dev_attr_msm_fb_type.attr,
 	&dev_attr_msm_fb_split.attr,
@@ -810,6 +852,7 @@ static struct attribute *mdss_fb_attrs[] = {
 	&dev_attr_msm_fb_thermal_level.attr,
 	&dev_attr_msm_fb_panel_status.attr,
 	&dev_attr_msm_fb_dfps_mode.attr,
+	&dev_attr_idle_power_collapse.attr,
 	NULL,
 };
 
@@ -1194,6 +1237,10 @@ static int mdss_fb_probe(struct platform_device *pdev)
 			pr_err("led_classdev_register failed\n");
 		else
 			lcd_backlight_registered = 1;
+#if defined(CONFIG_FB_MSM_MDSS_SAMSUNG)
+		/* init bl_levle_scaled -1 to be set by bl_level 0 */
+		mfd->bl_level_scaled = -1;
+#endif
 	}
 
 	mdss_fb_init_panel_modes(mfd, pdata);
@@ -1828,6 +1875,9 @@ static int mdss_fb_blank_sub(int blank_mode, struct fb_info *info,
 	int ret = 0;
 	int cur_power_state, req_power_state = MDSS_PANEL_POWER_OFF;
 	char trace_buffer[32];
+#if defined(CONFIG_FB_MSM_MDSS_SAMSUNG)
+	struct samsung_display_driver_data *vdd = samsung_get_vdd();
+#endif
 
 	if (!mfd || !op_enable)
 		return -EPERM;
@@ -1837,6 +1887,19 @@ static int mdss_fb_blank_sub(int blank_mode, struct fb_info *info,
 
 	pr_debug("%pS mode:%d\n", __builtin_return_address(0),
 		blank_mode);
+
+#if defined(CONFIG_FB_MSM_MDSS_SAMSUNG)
+	//mutex_lock(&vdd->vdd_hall_ic_blank_unblank_lock);
+
+	pr_err("FB_NUM:%d, MDSS_FB_%s ++ on=%d node : %d\n", mfd->panel_info->fb_num,
+			blank_mode == FB_BLANK_POWERDOWN ? "BLANK":
+			blank_mode == FB_BLANK_HSYNC_SUSPEND ? "BLANK":
+			blank_mode == FB_BLANK_UNBLANK ? "UNBLANK":
+			blank_mode == BLANK_FLAG_LP ? "DOZE":
+			blank_mode == BLANK_FLAG_ULP ? "DOZE_SUSPEND":"NONE",
+			mdss_fb_is_power_on(mfd), info->node);
+	MDSS_XLOG(0x11111, blank_mode, mfd->panel_power_state);
+#endif
 
 	snprintf(trace_buffer, sizeof(trace_buffer), "fb%d blank %d",
 		mfd->index, blank_mode);
@@ -1865,8 +1928,19 @@ static int mdss_fb_blank_sub(int blank_mode, struct fb_info *info,
 		}
 	}
 
+#if defined(CONFIG_FB_MSM_MDSS_SAMSUNG)
+	mutex_lock(&vdd->vdd_blank_unblank_lock);
+	if (info->node <= (SUPPORT_PANEL_COUNT - 1))
+		vdd->vdd_blank_mode[info->node] =  blank_mode;
+	mutex_unlock(&vdd->vdd_blank_unblank_lock);
+#endif
+
 	switch (blank_mode) {
 	case FB_BLANK_UNBLANK:
+#if defined(CONFIG_FB_MSM_MDSS_SAMSUNG)
+		if (wake_lock_active(&vdd->doze_wakelock))
+			wake_unlock(&vdd->doze_wakelock);
+#endif
 		pr_debug("unblank called. cur pwr state=%d\n", cur_power_state);
 		ret = mdss_fb_blank_unblank(mfd);
 		break;
@@ -1878,6 +1952,10 @@ static int mdss_fb_blank_sub(int blank_mode, struct fb_info *info,
 			return 0;
 		}
 
+#if defined(CONFIG_FB_MSM_MDSS_SAMSUNG)
+		if (wake_lock_active(&vdd->doze_wakelock))
+			wake_unlock(&vdd->doze_wakelock);
+#endif
 		ret = mdss_fb_blank_blank(mfd, req_power_state);
 		break;
 	case BLANK_FLAG_LP:
@@ -1895,6 +1973,10 @@ static int mdss_fb_blank_sub(int blank_mode, struct fb_info *info,
 				break;
 		}
 
+#if defined(CONFIG_FB_MSM_MDSS_SAMSUNG)
+		if (!wake_lock_active(&vdd->doze_wakelock))
+			wake_lock(&vdd->doze_wakelock);
+#endif
 		ret = mdss_fb_blank_blank(mfd, req_power_state);
 		break;
 	case FB_BLANK_HSYNC_SUSPEND:
@@ -1902,6 +1984,10 @@ static int mdss_fb_blank_sub(int blank_mode, struct fb_info *info,
 	default:
 		req_power_state = MDSS_PANEL_POWER_OFF;
 		pr_debug("blank powerdown called\n");
+#if defined(CONFIG_FB_MSM_MDSS_SAMSUNG)
+		if (wake_lock_active(&vdd->doze_wakelock))
+			wake_unlock(&vdd->doze_wakelock);
+#endif
 		ret = mdss_fb_blank_blank(mfd, req_power_state);
 		break;
 	}
@@ -1910,6 +1996,23 @@ static int mdss_fb_blank_sub(int blank_mode, struct fb_info *info,
 	sysfs_notify(&mfd->fbi->dev->kobj, NULL, "show_blank_event");
 
 	ATRACE_END(trace_buffer);
+
+#if defined(CONFIG_FB_MSM_MDSS_SAMSUNG)
+	mdss_fb_send_panel_event(mfd,
+					blank_mode + MDSS_SAMSUNG_EVENT_MAX, NULL);
+
+	pr_err("FB_NUM:%d, MDSS_FB_%s -- \n", mfd->panel_info->fb_num,
+			blank_mode == FB_BLANK_POWERDOWN ? "BLANK":
+			blank_mode == FB_BLANK_HSYNC_SUSPEND ? "BLANK":
+			blank_mode == FB_BLANK_UNBLANK ? "UNBLANK":
+			blank_mode == BLANK_FLAG_LP ? "DOZE":
+			blank_mode == BLANK_FLAG_ULP ? "DOZE_SUSPEND":"NONE");
+
+	if (info->node <= (SUPPORT_PANEL_COUNT - 1))
+		vdd->vdd_blank_mode_done[info->node] =  blank_mode;
+
+	//mutex_unlock(&vdd->vdd_hall_ic_blank_unblank_lock);
+#endif
 
 	return ret;
 }
@@ -3060,7 +3163,7 @@ static int mdss_fb_pan_display_ex(struct fb_info *info,
 	if (var->yoffset > (info->var.yres_virtual - info->var.yres))
 		return -EINVAL;
 
-	ret = mdss_fb_wait_for_kickoff(mfd);
+	ret = mdss_fb_pan_idle(mfd);
 	if (ret) {
 		pr_err("wait_for_kick failed. rc=%d\n", ret);
 		return ret;
@@ -3282,6 +3385,7 @@ int mdss_fb_atomic_commit(struct fb_info *info,
 	mfd->msm_fb_backup.disp_commit.l_roi =  commit_v1->left_roi;
 	mfd->msm_fb_backup.disp_commit.r_roi =  commit_v1->right_roi;
 	mfd->msm_fb_backup.disp_commit.flags =  commit_v1->flags;
+	pr_debug("%s dsu_mode = %d, x = %4d, y = %4d, w = %4d, h = %4d\n", __func__, commit_v1->dsu_mode, commit_v1->left_roi.x, commit_v1->left_roi.y, commit_v1->left_roi.w,commit_v1->left_roi.h);
 
 	mutex_lock(&mfd->mdp_sync_pt_data.sync_mutex);
 	atomic_inc(&mfd->mdp_sync_pt_data.commit_cnt);
@@ -3289,6 +3393,17 @@ int mdss_fb_atomic_commit(struct fb_info *info,
 	atomic_inc(&mfd->kickoff_pending);
 	wake_up_all(&mfd->commit_wait_q);
 	mutex_unlock(&mfd->mdp_sync_pt_data.sync_mutex);
+
+#if defined(CONFIG_FB_MSM_MDSS_SAMSUNG)
+	/*
+	 * If the layer counter is 0,
+	 * the black screen will be display on screen
+	 */
+	if (((mfd->panel_power_state == MDSS_PANEL_POWER_LP1) ||
+				(mfd->panel_power_state == MDSS_PANEL_POWER_LP2)) &&
+			!commit_v1->input_layer_cnt)
+		pr_err("[Panel LPM] %s Input layer cnt is 0\n", __func__);
+#endif
 
 	if (wait_for_finish)
 		ret = mdss_fb_pan_idle(mfd);
@@ -4242,6 +4357,7 @@ static void __mdss_fb_copy_pixel_ext(struct mdp_scale_data *src,
 {
 	if (!src || !dest)
 		return;
+	dest->enable = true;
 	memcpy(dest->init_phase_x, src->init_phase_x,
 		sizeof(src->init_phase_x));
 	memcpy(dest->phase_step_x, src->phase_step_x,
@@ -4751,6 +4867,10 @@ int mdss_fb_do_ioctl(struct fb_info *info, unsigned int cmd,
 	if (ret)
 		goto exit;
 
+#if defined(CONFIG_FB_MSM_MDSS_SAMSUNG)
+	LCD_DEBUG("cmd : %d\n", cmd & 0xFF);
+#endif
+
 	switch (cmd) {
 	case MSMFB_CURSOR:
 		ret = mdss_fb_cursor(info, argp);
@@ -4950,13 +5070,18 @@ EXPORT_SYMBOL(mdss_fb_get_phys_info);
 int __init mdss_fb_init(void)
 {
 	int rc = -ENODEV;
-
+#if defined(CONFIG_FB_MSM_MDSS_SAMSUNG)
+	struct samsung_display_driver_data *vdd = samsung_get_vdd();
+#endif
 	if (fb_get_options("msmfb", NULL))
 		return rc;
 
 	if (platform_driver_register(&mdss_fb_driver))
 		return rc;
 
+#if defined(CONFIG_FB_MSM_MDSS_SAMSUNG)
+	wake_lock_init(&vdd->doze_wakelock, WAKE_LOCK_SUSPEND,"doze-wakelock");
+#endif
 	return 0;
 }
 
@@ -5013,4 +5138,18 @@ void mdss_fb_report_panel_dead(struct msm_fb_data_type *mfd)
 	kobject_uevent_env(&mfd->fbi->dev->kobj,
 		KOBJ_CHANGE, envp);
 	pr_err("Panel has gone bad, sending uevent - %s\n", envp[0]);
+}
+
+void mdss_fb_idle_pc(struct msm_fb_data_type *mfd)
+{
+	struct mdss_overlay_private *mdp5_data = mfd_to_mdp5_data(mfd);
+
+	if (mdss_fb_is_power_off(mfd))
+		return;
+
+	if ((mfd->panel_info->type == MIPI_CMD_PANEL) &&
+			(mdp5_data)) {
+		pr_debug("Notify fb%d idle power collapsed\n", mfd->index);
+		sysfs_notify(&mfd->fbi->dev->kobj, NULL, "idle_power_collapse");
+	}
 }

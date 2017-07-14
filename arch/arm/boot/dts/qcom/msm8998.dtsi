@@ -1,4 +1,4 @@
-/* Copyright (c) 2015-2016, The Linux Foundation. All rights reserved.
+/* Copyright (c) 2015-2017, The Linux Foundation. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -25,6 +25,9 @@
 		serial0 = &uartblsp2dm1;
 		pci-domain0 = &pcie0;
 		sdhc2 = &sdhc_2; /* SDC2 SD card slot */
+		uart0 = &blsp1_uart3_hs; 
+		uart1 = &blsp1_uart2_hs; 
+		uart8 = &blsp2_uart2_hs;
 	};
 
 	psci {
@@ -262,10 +265,16 @@
 			reg = <0 0x85800000 0 0x3700000>;
 		};
 
-		pil_slpi_mem: pil_slpi_region@93800000 {
+		pil_slpi_mem: pil_slpi_region@93a00000 {
 			compatible = "removed-dma-pool";
 			no-map;
-			reg = <0 0x93800000 0 0xf00000>;
+			reg = <0 0x93a00000 0 0xf00000>;
+		};
+
+		pil_mba_mem: pil_mba_region@93800000 {
+			compatible = "removed-dma-pool";
+			no-map;
+			reg = <0 0x93800000 0 0x200000>;
 		};
 
 		pil_video_mem: pil_video_region@93300000 {
@@ -1256,8 +1265,7 @@
 		compatible = "qcom,glink_ssr";
 		label = "modem";
 		qcom,edge = "mpss";
-		qcom,notify-edges = <&glink_lpass>, <&glink_dsps>, <&glink_rpm>,
-					<&glink_spss>;
+		qcom,notify-edges = <&glink_lpass>, <&glink_dsps>, <&glink_rpm>;
 		qcom,xprt = "smem";
 	};
 
@@ -1265,8 +1273,7 @@
 		compatible = "qcom,glink_ssr";
 		label = "adsp";
 		qcom,edge = "lpass";
-		qcom,notify-edges = <&glink_mpss>, <&glink_dsps>, <&glink_rpm>,
-					<&glink_spss>;
+		qcom,notify-edges = <&glink_mpss>, <&glink_dsps>, <&glink_rpm>;
 		qcom,xprt = "smem";
 	};
 
@@ -1274,8 +1281,7 @@
 		compatible = "qcom,glink_ssr";
 		label = "slpi";
 		qcom,edge = "dsps";
-		qcom,notify-edges = <&glink_mpss>, <&glink_lpass>, <&glink_rpm>,
-					<&glink_spss>;
+		qcom,notify-edges = <&glink_mpss>, <&glink_lpass>, <&glink_rpm>;
 		qcom,xprt = "smem";
 	};
 
@@ -1284,17 +1290,8 @@
 		label = "rpm";
 		qcom,edge = "rpm";
 		qcom,notify-edges = <&glink_lpass>, <&glink_mpss>,
-					<&glink_dsps>, <&glink_spss>;
+					<&glink_dsps>;
 		qcom,xprt = "smem";
-	};
-
-	glink_spss: qcom,glink-ssr-spss {
-		compatible = "qcom,glink_ssr";
-		label = "spss";
-		qcom,edge = "spss";
-		qcom,notify-edges = <&glink_mpss>, <&glink_lpass>,
-				<&glink_dsps>, <&glink_rpm>;
-		qcom,xprt = "mailbox";
 	};
 
 	qcom,glink-smem-native-xprt-modem@86000000 {
@@ -1315,6 +1312,18 @@
 		qcom,irq-mask = <0x200>;
 		interrupts = <0 157 1>;
 		label = "lpass";
+		qcom,qos-config = <&glink_qos_adsp>;
+		qcom,ramp-time = <0xaf>;
+	};
+
+	glink_qos_adsp: qcom,glink-qos-config-adsp {
+		compatible = "qcom,glink-qos-config";
+		qcom,flow-info = <0x3c 0x0>,
+				<0x3c 0x0>,
+				<0x3c 0x0>,
+				<0x3c 0x0>;
+		qcom,mtu-size = <0x800>;
+		qcom,tput-stats-cycle = <0xa>;
 	};
 
 	qcom,glink-smem-native-xprt-dsps@86000000 {
@@ -1335,21 +1344,6 @@
 		qcom,irq-mask = <0x1>;
 		interrupts = <0 168 1>;
 		label = "rpm";
-	};
-
-	qcom,glink-mailbox-xprt-spss@1d05008 {
-		compatible = "qcom,glink-mailbox-xprt";
-		reg = <0x1d05008 0x8>,
-			<0x1d05010 0x4>,
-			<0x1d0501c 0x4>,
-			<0x1d06008 0x4>;
-		reg-names = "mbox-loc-addr", "mbox-loc-size", "irq-reg-base",
-			"irq-rx-reset";
-		qcom,irq-mask = <0x1>;
-		interrupts = <0 348 4>;
-		label = "spss";
-		qcom,tx-ring-size = <0x800>;
-		qcom,rx-ring-size = <0x800>;
 	};
 
 	glink_spi_xprt_wdsp: qcom,glink-spi-xprt-wdsp {
@@ -1692,7 +1686,7 @@
 					<61 512 240000 800000>;
 
 		qcom,dwc-usb3-msm-tx-fifo-size = <21288>;
-		extcon = <&pmi8998_pdphy>;
+		/* extcon = <&pmi8998_pdphy>; */
 
 		clocks = <&clock_gcc clk_gcc_usb30_master_clk>,
 			<&clock_gcc clk_gcc_cfg_noc_usb3_axi_clk>,
@@ -1762,6 +1756,7 @@
 		reg-names = "qusb_phy_base",
 				"tcsr_clamp_dig_n_1p8";
 		vdd-supply = <&pm8998_l1>;
+		vdda12-supply = <&pm8998_l2>;
 		vdda18-supply = <&pm8998_l12>;
 		vdda33-supply = <&pm8998_l24>;
 		qcom,vdd-voltage-level = <0 880000 880000>;
@@ -2050,7 +2045,6 @@
 		qcom,pil-self-auth;
 		qcom,sysmon-id = <0>;
 		qcom,ssctl-instance-id = <0x12>;
-		qcom,override-acc;
 		qcom,qdsp6v62-1-2;
 		status = "ok";
 		memory-region = <&modem_mem>;
@@ -2065,6 +2059,10 @@
 
 		/* GPIO output to mss */
 		qcom,gpio-force-stop = <&smp2pgpio_ssr_smp2p_1_out 0 0>;
+		qcom,mba-mem@0 {
+			compatible = "qcom,pil-mba-mem";
+			memory-region = <&pil_mba_mem>;
+		};
 	};
 
 	tsens0: tsens@10aa000 {
@@ -2249,6 +2247,7 @@
 		qcom,support-fde;
 		qcom,no-clock-support;
 		qcom,appsbl-qseecom-support;
+		qcom,fde-key-size;
 		qcom,commonlib64-loaded-by-uefi;
 		qcom,msm-bus,name = "qseecom-noc";
 		qcom,msm-bus,num-cases = <4>;
@@ -2264,8 +2263,7 @@
 			 <&clock_gcc clk_qseecom_ce1_clk>,
 			 <&clock_gcc clk_gcc_ce1_ahb_m_clk>,
 			 <&clock_gcc clk_gcc_ce1_axi_m_clk>;
-		qcom,ce-opp-freq = <171430000>;
-		qcom,qsee-reentrancy-support = <2>;
+		qcom,ce-opp-freq = <171430000>;	
 	};
 
 	qcom_tzlog: tz-log@146BF720 {
@@ -2551,7 +2549,7 @@
 					0x0dc 0x00 0x00
 					0x0d8 0x3f 0x00
 					0x00c 0x09 0x00
-					0x010 0x01 0x00
+					0x010 0x00 0x00 // SSC enable(0x01), disable(0x00)
 					0x01c 0x40 0x00
 					0x020 0x01 0x00
 					0x014 0x02 0x00
@@ -2591,10 +2589,16 @@
 					0x800 0x00 0x00
 					0x808 0x03 0x00>;
 
-		pinctrl-names = "default";
+		pinctrl-names = "default", "sleep";
 		pinctrl-0 = <&pcie0_clkreq_default
 			&pcie0_perst_default
-			&pcie0_wake_default>;
+			&pcie0_wake_default
+			&pcie0_shubwake_default>;
+
+		pinctrl-1 = <&pcie0_clkreq_sleep
+			&pcie0_perst_default
+			&pcie0_wake_sleep
+			&pcie0_shubwake_sleep>;
 
 		perst-gpio = <&tlmm 35 0>;
 		wake-gpio = <&tlmm 37 0>;
@@ -2612,6 +2616,8 @@
 		qcom,l1-supported;
 		qcom,l1ss-supported;
 		qcom,aux-clk-sync;
+		qcom,common-clk-en;
+		qcom,clk-power-manage-en;
 
 		qcom,ep-latency = <10>;
 
@@ -2778,7 +2784,7 @@
 		clock-names = "xo";
 		qcom,proxy-clock-names = "xo";
 		qcom,pil-generic-irq-handler;
-		status = "ok";
+		status = "disabled";
 
 		qcom,pas-id = <14>;
 		qcom,proxy-timeout-ms = <10000>;
@@ -2819,7 +2825,11 @@
 			compatible = "qcom,msm-imem-restart_reason";
 			reg = <0x65c 4>;
 		};
-
+	/* CONFIG_SEC_DEBUG */
+		upload_cause@66c { 
+			compatible = "qcom,msm-imem-upload_cause";
+			reg = <0x66c 4>;
+		};
 		boot_stats@6b0 {
 			compatible = "qcom,msm-imem-boot_stats";
 			reg = <0x6b0 32>;
@@ -3073,18 +3083,6 @@
 		qcom,smmu-support;
 		status = "disabled";
 	};
-
-	qcom,qsee_ipc_irq_bridge {
-		compatible = "qcom,qsee-ipc-irq-bridge";
-
-		qcom,qsee-ipc-irq-spss {
-			qcom,rx-irq-clr = <0x1d08008 0x4>;
-			qcom,rx-irq-clr-mask = <0x1>;
-			qcom,dev-name = "qsee_ipc_irq_spss";
-			interrupts = <0 349 4>;
-			label = "spss";
-		};
-	};
 };
 
 &clock_cpu {
@@ -3179,7 +3177,6 @@
 };
 
 #include "msm-pm8998.dtsi"
-#include "msm-pmi8998.dtsi"
 #include "msm-pm8005.dtsi"
 #include "msm-pm8998-rpm-regulator.dtsi"
 #include "msm8998-regulator.dtsi"

@@ -1,4 +1,4 @@
-/* Copyright (c) 2008-2016, The Linux Foundation. All rights reserved.
+/* Copyright (c) 2008-2017, The Linux Foundation. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -56,6 +56,9 @@ struct panel_id {
 #define DSC_PPS_LEN		128
 #define INTF_EVENT_STR(x)	#x
 
+/* HDR propeties count */
+#define DISPLAY_PRIMARIES_COUNT	8	/* WRGB x and y values*/
+
 static inline const char *mdss_panel2str(u32 panel)
 {
 	static const char const *names[] = {
@@ -108,11 +111,14 @@ enum {
 	MDSS_PANEL_POWER_LCD_DISABLED,
 };
 
+#if defined(CONFIG_FB_MSM_MDSS_SAMSUNG)
 enum {
 	MDSS_PANEL_BLANK_BLANK = 0,
 	MDSS_PANEL_BLANK_UNBLANK,
 	MDSS_PANEL_BLANK_LOW_POWER,
+	MDSS_PANEL_BLANK_READY_TO_UNBLANK,
 };
+#endif
 
 enum {
 	MODE_GPIO_NOT_VALID = 0,
@@ -290,6 +296,14 @@ enum mdss_intf_events {
 	MDSS_EVENT_DEEP_COLOR,
 	MDSS_EVENT_DISABLE_PANEL,
 	MDSS_EVENT_UPDATE_PANEL_PPM,
+#if defined(CONFIG_FB_MSM_MDSS_SAMSUNG)
+	MDSS_SAMSUNG_EVENT_START,
+	MDSS_SAMSUNG_EVENT_FRAME_UPDATE,
+	MDSS_SAMSUNG_EVENT_FB_EVENT_CALLBACK,
+	MDSS_SAMSUNG_EVENT_PANEL_ESD_RECOVERY,
+	MDSS_SAMSUNG_EVENT_MULTI_RESOLUTION,
+	MDSS_SAMSUNG_EVENT_MAX,
+#endif
 	MDSS_EVENT_MAX,
 };
 
@@ -369,9 +383,11 @@ struct lcd_panel_info {
 	u32 h_back_porch;
 	u32 h_front_porch;
 	u32 h_pulse_width;
+	u32 h_active_low;
 	u32 v_back_porch;
 	u32 v_front_porch;
 	u32 v_pulse_width;
+	u32 v_active_low;
 	u32 border_clr;
 	u32 underflow_clr;
 	u32 hsync_skew;
@@ -540,7 +556,10 @@ struct dynamic_fps_data {
  * @DFPS_IMMEDIATE_PORCH_UPDATE_MODE_VFP: update fps using vertical timings
  * @DFPS_IMMEDIATE_PORCH_UPDATE_MODE_HFP: update fps using horizontal timings
  * @DFPS_IMMEDIATE_MULTI_UPDATE_MODE_CLK_HFP: update fps using both horizontal
- *    timings and clock.
+ *  timings and clock.
+ * @DFPS_IMMEDIATE_MULTI_MODE_HFP_CALC_CLK: update fps using both
+ *  horizontal timings, clock need to be caculate base on new clock and
+ *  porches.
  * @DFPS_MODE_MAX: defines maximum limit of supported modes.
  */
 enum dynamic_fps_update {
@@ -549,6 +568,7 @@ enum dynamic_fps_update {
 	DFPS_IMMEDIATE_PORCH_UPDATE_MODE_VFP,
 	DFPS_IMMEDIATE_PORCH_UPDATE_MODE_HFP,
 	DFPS_IMMEDIATE_MULTI_UPDATE_MODE_CLK_HFP,
+	DFPS_IMMEDIATE_MULTI_MODE_HFP_CALC_CLK,
 	DFPS_MODE_MAX
 };
 
@@ -730,6 +750,19 @@ struct mdss_dsi_dual_pu_roi {
 	bool enabled;
 };
 
+struct mdss_panel_hdr_properties {
+	bool hdr_enabled;
+
+	/* WRGB X and y values arrayed in format */
+	/* [WX, WY, RX, RY, GX, GY, BX, BY] */
+	u32 display_primaries[DISPLAY_PRIMARIES_COUNT];
+
+	/* peak brightness supported by panel */
+	u32 peak_brightness;
+	/* Blackness level supported by panel */
+	u32 blackness_level;
+};
+
 struct mdss_panel_info {
 	u32 xres;
 	u32 yres;
@@ -797,6 +830,9 @@ struct mdss_panel_info {
 	u32 partial_update_roi_merge;
 	struct ion_handle *splash_ihdl;
 	int panel_power_state;
+#if defined(CONFIG_FB_MSM_MDSS_SAMSUNG)
+	int blank_state;
+#endif 
 	int compression_mode;
 
 	uint32_t panel_dead;
@@ -874,6 +910,12 @@ struct mdss_panel_info {
 
 	/* stores initial adaptive variable refresh vtotal value */
 	u32 saved_avr_vtotal;
+
+	/* HDR properties of display panel*/
+	struct mdss_panel_hdr_properties hdr_properties;
+#if defined(CONFIG_FB_MSM_MDSS_SAMSUNG)
+	int panel_state;
+#endif
 };
 
 struct mdss_panel_timing {
@@ -943,6 +985,9 @@ struct mdss_panel_data {
 	 * are still on; panel will recover after unblank
 	 */
 	bool panel_disable_mode;
+#if defined(CONFIG_FB_MSM_MDSS_SAMSUNG)
+	void *panel_private;
+#endif
 };
 
 struct mdss_panel_debugfs_info {
@@ -970,15 +1015,15 @@ static inline u32 mdss_panel_get_framerate(struct mdss_panel_info *panel_info)
 	case MIPI_CMD_PANEL:
 		frame_rate = panel_info->mipi.frame_rate;
 		break;
-	case DP_PANEL:
-		frame_rate = panel_info->edp.frame_rate;
-		break;
 	case WRITEBACK_PANEL:
 		frame_rate = DEFAULT_FRAME_RATE;
 		break;
 	case DTV_PANEL:
+	case DP_PANEL:
 		if (panel_info->dynamic_fps) {
-			frame_rate = panel_info->lcdc.frame_rate;
+			frame_rate = panel_info->lcdc.frame_rate / 1000;
+			if (panel_info->lcdc.frame_rate % 1000)
+				frame_rate += 1;
 			break;
 		}
 	default:

@@ -906,6 +906,12 @@ static void process_init_reply(struct fuse_conn *fc, struct fuse_req *req)
 				pr_info("FUSE: Pass through is enabled [%s : %d]!\n",
 					current->comm, current->pid);
 			}
+			if (arg->flags & FUSE_RESERVE_SPACE) {
+				fc->reserved_space_mb = arg->reserved_space_mb;
+				pr_info("FUSE: RESERVE_SPACE enabled [%s : %d]! %u\n",
+						current->comm, current->pid,
+						arg->reserved_space_mb);
+			}
 			if (arg->time_gran && arg->time_gran <= 1000000000)
 				fc->sb->s_time_gran = arg->time_gran;
 		} else {

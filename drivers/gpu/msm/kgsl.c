@@ -30,6 +30,7 @@
 #include <linux/security.h>
 #include <linux/compat.h>
 #include <linux/ctype.h>
+#include <linux/show_mem_notifier.h>
 
 #include "kgsl.h"
 #include "kgsl_debugfs.h"
@@ -62,6 +63,10 @@
 #define KGSL_DMA_BIT_MASK	DMA_BIT_MASK(64)
 #else
 #define KGSL_DMA_BIT_MASK	DMA_BIT_MASK(32)
+#endif
+
+#if defined(CONFIG_FB_MSM_MDSS_SAMSUNG)
+pid_t kgsl_mem_dump_pid = -EPERM;
 #endif
 
 static char *kgsl_mmu_type;
@@ -353,8 +358,10 @@ static int kgsl_mem_entry_track_gpuaddr(struct kgsl_device *device,
 	/*
 	 * If SVM is enabled for this object then the address needs to be
 	 * assigned elsewhere
+	 * Also do not proceed further in case of NoMMU.
 	 */
-	if (kgsl_memdesc_use_cpu_map(&entry->memdesc))
+	if (kgsl_memdesc_use_cpu_map(&entry->memdesc) ||
+		(kgsl_mmu_get_mmutype(device) == KGSL_MMU_TYPE_NONE))
 		return 0;
 
 	pagetable = kgsl_memdesc_is_secured(&entry->memdesc) ?
@@ -491,20 +498,17 @@ void kgsl_context_dump(struct kgsl_context *context)
 EXPORT_SYMBOL(kgsl_context_dump);
 
 /* Allocate a new context ID */
-static int _kgsl_get_context_id(struct kgsl_device *device,
-		struct kgsl_context *context)
+static int _kgsl_get_context_id(struct kgsl_device *device)
 {
 	int id;
 
 	idr_preload(GFP_KERNEL);
 	write_lock(&device->context_lock);
-	id = idr_alloc(&device->context_idr, context, 1,
+	/* Allocate the slot but don't put a pointer in it yet */
+	id = idr_alloc(&device->context_idr, NULL, 1,
 		KGSL_MEMSTORE_MAX, GFP_NOWAIT);
 	write_unlock(&device->context_lock);
 	idr_preload_end();
-
-	if (id > 0)
-		context->id = id;
 
 	return id;
 }
@@ -529,7 +533,7 @@ int kgsl_context_init(struct kgsl_device_private *dev_priv,
 	char name[64];
 	int ret = 0, id;
 
-	id = _kgsl_get_context_id(device, context);
+	id = _kgsl_get_context_id(device);
 	if (id == -ENOSPC) {
 		/*
 		 * Before declaring that there are no contexts left try
@@ -538,7 +542,7 @@ int kgsl_context_init(struct kgsl_device_private *dev_priv,
 		 */
 
 		flush_workqueue(device->events_wq);
-		id = _kgsl_get_context_id(device, context);
+		id = _kgsl_get_context_id(device);
 	}
 
 	if (id < 0) {
@@ -549,6 +553,8 @@ int kgsl_context_init(struct kgsl_device_private *dev_priv,
 
 		return id;
 	}
+
+	context->id = id;
 
 	kref_init(&context->refcount);
 	/*
@@ -1733,6 +1739,12 @@ long kgsl_ioctl_drawctxt_create(struct kgsl_device_private *dev_priv,
 		goto done;
 	}
 	trace_kgsl_context_create(dev_priv->device, context, param->flags);
+
+	/* Commit the pointer to the context in context_idr */
+	write_lock(&device->context_lock);
+	idr_replace(&device->context_idr, context, context->id);
+	write_unlock(&device->context_lock);
+
 	param->drawctxt_id = context->id;
 done:
 	return result;
@@ -4198,6 +4210,12 @@ kgsl_get_unmapped_area(struct file *file, unsigned long addr,
 	struct kgsl_device *device = dev_priv->device;
 	struct kgsl_mem_entry *entry = NULL;
 
+#if defined(CONFIG_FB_MSM_MDSS_SAMSUNG)
+	struct task_struct *task;
+	struct mm_struct *mm;
+	unsigned long total_vm = 0;
+#endif
+
 	if (vma_offset == (unsigned long) device->memstore.gpuaddr)
 		return get_unmapped_area(NULL, addr, len, pgoff, flags);
 
@@ -4223,6 +4241,26 @@ kgsl_get_unmapped_area(struct file *file, unsigned long addr,
 			KGSL_MEM_ERR(device,
 				"_get_svm_area: pid %d addr %lx pgoff %lx len %ld failed error %d\n",
 				private->pid, addr, pgoff, len, (int) val);
+
+#if defined(CONFIG_FB_MSM_MDSS_SAMSUNG)
+		if (IS_ERR_VALUE(val)) {
+			kgsl_mem_dump_pid = private->pid;
+
+			task = find_task_by_vpid(kgsl_mem_dump_pid);
+
+			if (!IS_ERR_OR_NULL(task)) {
+				mm = task->mm;
+				if (!IS_ERR_OR_NULL(mm))
+					total_vm = mm->total_vm;
+				else
+					total_vm = 0;
+
+				pr_err("%s kgsl_dump_pid : %d pid : %d name : %16s total_vm : 0x%lx\n",
+					__func__, kgsl_mem_dump_pid, task->pid, task->comm, total_vm);
+			} else
+				pr_err("%s kgsl_dump_pid : %d \n",__func__, kgsl_mem_dump_pid);
+		}
+#endif
 	}
 
 put:
@@ -4627,6 +4665,27 @@ void kgsl_device_platform_remove(struct kgsl_device *device)
 }
 EXPORT_SYMBOL(kgsl_device_platform_remove);
 
+static int kgsl_sharedmem_size_notifier(struct notifier_block *nb,
+					unsigned long is_simple, void *data)
+{
+	struct seq_file *s;
+
+	s = (struct seq_file *)data;
+	if (!is_simple)
+		return 0;
+	if (s != NULL)
+		seq_printf(s, "KgslSharedmem:  %8lu kB\n",
+			atomic_long_read(&kgsl_driver.stats.page_alloc) >> 10);
+	else
+		printk("KgslSharedmem:%lukB ",
+			atomic_long_read(&kgsl_driver.stats.page_alloc) >> 10);
+	return 0;
+}
+
+static struct notifier_block kgsl_sharedmem_size_nb = {
+	.notifier_call = kgsl_sharedmem_size_notifier,
+};
+
 static void kgsl_core_exit(void)
 {
 	kgsl_events_exit();
@@ -4653,6 +4712,7 @@ static void kgsl_core_exit(void)
 
 	kgsl_memfree_exit();
 	unregister_chrdev_region(kgsl_driver.major, KGSL_DEVICE_MAX);
+	show_mem_notifier_unregister(&kgsl_sharedmem_size_nb);
 }
 
 static int __init kgsl_core_init(void)
@@ -4730,6 +4790,8 @@ static int __init kgsl_core_init(void)
 		goto err;
 
 	kgsl_memfree_init();
+
+	show_mem_notifier_register(&kgsl_sharedmem_size_nb);
 
 	return 0;
 

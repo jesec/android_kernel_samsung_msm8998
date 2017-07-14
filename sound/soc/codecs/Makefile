@@ -72,6 +72,9 @@ snd-soc-max98095-objs := max98095.o
 snd-soc-max98357a-objs := max98357a.o
 snd-soc-max98925-objs := max98925.o
 snd-soc-max9850-objs := max9850.o
+snd-soc-max98506-objs := max98506.o
+snd-soc-maxim-dsm-objs := maxim_dsm.o
+snd-soc-maxim-dsm-cal-objs := maxim_dsm_cal.o maxim_dsm_power.o
 snd-soc-mc13783-objs := mc13783.o
 snd-soc-ml26124-objs := ml26124.o
 snd-soc-hdmi-codec-objs := hdmi.o
@@ -138,6 +141,10 @@ snd-soc-wcd9xxx-objs := wcd9xxx-resmgr.o wcd9xxx-mbhc.o wcd9xxx-common.o wcdcal-
 snd-soc-wcd9xxx-v2-objs := wcd9xxx-common-v2.o wcd9xxx-resmgr-v2.o
 ifeq ($(CONFIG_COMMON_CLK_MSM), y)
 	audio-ext-clock-objs := audio-ext-clk.o
+endif
+
+ifeq ($(CONFIG_COMMON_CLK_QCOM), y)
+	audio-ext-clock-up-objs := audio-ext-clk-up.o
 endif
 snd-soc-wcd-cpe-objs := wcd_cpe_services.o wcd_cpe_core.o
 snd-soc-wsa881x-objs := wsa881x.o wsa881x-tables.o wsa881x-regmap.o wsa881x-temp-sensor.o
@@ -287,6 +294,9 @@ obj-$(CONFIG_SND_SOC_MAX98095)	+= snd-soc-max98095.o
 obj-$(CONFIG_SND_SOC_MAX98357A)	+= snd-soc-max98357a.o
 obj-$(CONFIG_SND_SOC_MAX98925)	+= snd-soc-max98925.o
 obj-$(CONFIG_SND_SOC_MAX9850)	+= snd-soc-max9850.o
+obj-$(CONFIG_SND_SOC_MAX98506)	+= snd-soc-max98506.o
+obj-$(CONFIG_SND_SOC_MAXIM_DSM)	+= snd-soc-maxim-dsm.o
+obj-$(CONFIG_SND_SOC_MAXIM_DSM_CAL)	+= snd-soc-maxim-dsm-cal.o
 obj-$(CONFIG_SND_SOC_MC13783)	+= snd-soc-mc13783.o
 obj-$(CONFIG_SND_SOC_ML26124)	+= snd-soc-ml26124.o
 obj-$(CONFIG_SND_SOC_HDMI_CODEC) += snd-soc-hdmi-codec.o
@@ -348,6 +358,9 @@ obj-$(CONFIG_SND_SOC_WCD9335)	+= snd-soc-wcd9335.o
 obj-$(CONFIG_SND_SOC_WCD934X)	+= wcd934x/
 ifeq ($(CONFIG_COMMON_CLK_MSM), y)
 	obj-$(CONFIG_AUDIO_EXT_CLK)	+= audio-ext-clock.o
+endif
+ifeq ($(CONFIG_COMMON_CLK_QCOM), y)
+	obj-$(CONFIG_AUDIO_EXT_CLK)     += audio-ext-clock-up.o
 endif
 obj-$(CONFIG_SND_SOC_WCD9XXX)   += snd-soc-wcd9xxx.o
 obj-$(CONFIG_SND_SOC_WCD9XXX_V2) += snd-soc-wcd9xxx-v2.o
@@ -414,6 +427,9 @@ obj-$(CONFIG_SND_SOC_WM9713)	+= snd-soc-wm9713.o
 obj-$(CONFIG_SND_SOC_WM_ADSP)	+= snd-soc-wm-adsp.o
 obj-$(CONFIG_SND_SOC_WM_HUBS)	+= snd-soc-wm-hubs.o
 obj-$(CONFIG_SND_SOC_MSM_STUB)  += snd-soc-msm-stub.o
+
+# DBMDx
+obj-$(CONFIG_SND_SOC_DBMDX)	+= dbmdx/
 
 # Amp
 obj-$(CONFIG_SND_SOC_MAX9877)	+= snd-soc-max9877.o

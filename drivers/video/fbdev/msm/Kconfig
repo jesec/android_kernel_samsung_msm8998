@@ -1,4 +1,5 @@
 source "drivers/video/fbdev/msm/msm_dba/Kconfig"
+source "drivers/video/fbdev/msm/samsung/Kconfig"
 
 if FB_MSM
 
@@ -103,6 +104,19 @@ config FB_MSM_MDSS_DP_PANEL
 	The MDSS DP Panel provides support for DP host controller driver
 	which runs in Video mode only and is responsible for transmitting
 	frame buffer from host SOC to DP display panel.
+
+config SEC_DISPLAYPORT
+	depends on FB_MSM_MDSS
+	bool "MDSS DP SEC feature"
+	---help---
+	this feature is for samsung specific code.
+
+config SEC_DISPLAYPORT_ENG
+	depends on FB_MSM_MDSS
+	bool "MDSS DP SEC ENG feature"
+	default n
+	---help---
+	this feature is for samsung specific eng code.
 
 config FB_MSM_MDSS_MDP3
 	depends on FB_MSM_MDSS

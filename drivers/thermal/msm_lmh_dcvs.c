@@ -1,4 +1,4 @@
-/* Copyright (c) 2016, The Linux Foundation. All rights reserved.
+/* Copyright (c) 2016-2017, The Linux Foundation. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -53,7 +53,7 @@
 
 #define MSM_LIMITS_DOMAIN_MAX		0x444D4158
 
-#define MSM_LIMITS_HIGH_THRESHOLD_VAL	95000
+#define MSM_LIMITS_HIGH_THRESHOLD_VAL	85000
 #define MSM_LIMITS_ARM_THRESHOLD_VAL	65000
 #define MSM_LIMITS_POLLING_DELAY_MS	10
 #define MSM_LIMITS_CLUSTER_0_REQ	0x179C1B04
@@ -64,6 +64,8 @@
 	_max = (_val) & 0x3FF; \
 	_max *= 19200; \
 } while (0)
+#define FREQ_KHZ_TO_HZ(_val) ((_val) * 1000)
+#define FREQ_HZ_TO_KHZ(_val) ((_val) / 1000)
 
 enum lmh_hw_trips {
 	LIMITS_TRIP_LO,
@@ -83,9 +85,25 @@ struct msm_lmh_dcvs_hw {
 	uint32_t max_freq;
 	uint32_t hw_freq_limit;
 	struct list_head list;
+#ifdef CONFIG_SEC_PM
+	uint32_t prev_max_freq;
+	uint32_t lowest_freq;
+	bool limiting;
+#endif
 };
 
 LIST_HEAD(lmh_dcvs_hw_list);
+
+#ifdef CONFIG_SEC_PM
+#include <linux/ipc_logging.h>
+void *lmh_dcvs_ipc_log;
+#define LMHDCVS_IPC_LOG_PAGES	10
+#define LMHDCVS_IPC_LOG(msg...)					\
+	do {							\
+		if (lmh_dcvs_ipc_log)				\
+			ipc_log_string(lmh_dcvs_ipc_log, msg);	\
+	} while (0)
+#endif
 
 static void msm_lmh_dcvs_get_max_freq(uint32_t cpu, uint32_t *max_freq)
 {
@@ -109,6 +127,7 @@ static uint32_t msm_lmh_mitigation_notify(struct msm_lmh_dcvs_hw *hw)
 	uint32_t max_limit = 0, val = 0;
 	struct device *cpu_dev = NULL;
 	unsigned long freq_val;
+	struct dev_pm_opp *opp_entry;
 
 	val = readl_relaxed(hw->osm_hw_reg);
 	dcvsh_get_frequency(val, max_limit);
@@ -119,11 +138,23 @@ static uint32_t msm_lmh_mitigation_notify(struct msm_lmh_dcvs_hw *hw)
 		goto notify_exit;
 	}
 
-	freq_val = max_limit;
+	freq_val = FREQ_KHZ_TO_HZ(max_limit);
 	rcu_read_lock();
-	dev_pm_opp_find_freq_floor(cpu_dev, &freq_val);
+	opp_entry = dev_pm_opp_find_freq_floor(cpu_dev, &freq_val);
+	/*
+	 * Hardware mitigation frequency can be lower than the lowest
+	 * possible CPU frequency. In that case freq floor call will
+	 * fail with -ERANGE and we need to match to the lowest
+	 * frequency using freq_ceil.
+	 */
+	if (IS_ERR(opp_entry) && PTR_ERR(opp_entry) == -ERANGE) {
+		opp_entry = dev_pm_opp_find_freq_ceil(cpu_dev, &freq_val);
+		if (IS_ERR(opp_entry))
+			dev_err(cpu_dev, "frequency:%lu. opp error:%ld\n",
+					freq_val, PTR_ERR(opp_entry));
+	}
 	rcu_read_unlock();
-	max_limit = freq_val;
+	max_limit = FREQ_HZ_TO_KHZ(freq_val);
 
 	sched_update_cpu_freq_min_max(&hw->core_map, 0, max_limit);
 	trace_lmh_dcvs_freq(cpumask_first(&hw->core_map), max_limit);
@@ -144,11 +175,26 @@ static void msm_lmh_dcvs_poll(unsigned long data)
 	max_limit = msm_lmh_mitigation_notify(hw);
 	if (max_limit >= hw->max_freq) {
 		del_timer(&hw->poll_timer);
+#ifdef CONFIG_SEC_PM
+		LMHDCVS_IPC_LOG("Finished lmh cpu%d, lowest freq %d\n",
+			cpumask_first(&hw->core_map), hw->lowest_freq);
+		hw->limiting = false;
+		hw->lowest_freq = UINT_MAX;
+#endif
 		writel_relaxed(0xFF, hw->int_clr_reg);
 		enable_irq(hw->irq_num);
 	} else {
 		mod_timer(&hw->poll_timer, jiffies + msecs_to_jiffies(
 			MSM_LIMITS_POLLING_DELAY_MS));
+	}
+
+#ifdef CONFIG_SEC_PM
+	if (max_limit < hw->lowest_freq)
+		hw->lowest_freq = max_limit;
+
+	if ((hw->limiting == true) && (hw->prev_max_freq != max_limit)) {
+		hw->prev_max_freq = max_limit;
+#endif
 	}
 }
 
@@ -157,6 +203,11 @@ static irqreturn_t lmh_dcvs_handle_isr(int irq, void *data)
 	struct msm_lmh_dcvs_hw *hw = data;
 
 	disable_irq_nosync(irq);
+#ifdef CONFIG_SEC_PM
+		LMHDCVS_IPC_LOG("Start lmh cpu%d @%d\n",
+			cpumask_first(&hw->core_map), hw->hw_freq_limit);
+#endif
+	hw->limiting = true;
 	msm_lmh_mitigation_notify(hw);
 	mod_timer(&hw->poll_timer, jiffies + msecs_to_jiffies(
 			MSM_LIMITS_POLLING_DELAY_MS));
@@ -381,6 +432,10 @@ static int msm_lmh_dcvs_probe(struct platform_device *pdev)
 	hw->default_hi.trip = THERMAL_TRIP_CONFIGURABLE_HI;
 	hw->default_hi.notify = trip_notify;
 
+#ifdef CONFIG_SEC_PM
+	hw->limiting = false;
+#endif	
+
 	/*
 	 * Setup virtual thermal zones for each LMH-DCVS hardware
 	 * The sensor does not do actual thermal temperature readings
@@ -470,6 +525,15 @@ static int msm_lmh_dcvs_probe(struct platform_device *pdev)
 
 	INIT_LIST_HEAD(&hw->list);
 	list_add(&hw->list, &lmh_dcvs_hw_list);
+
+#ifdef CONFIG_SEC_PM
+	if (!lmh_dcvs_ipc_log)
+		lmh_dcvs_ipc_log = ipc_log_context_create(
+					LMHDCVS_IPC_LOG_PAGES, "lmh_dcvs", 0);
+
+	if (!lmh_dcvs_ipc_log)
+		pr_err("%s: Failed to create lmh logging context\n", __func__);
+#endif
 
 	return ret;
 }

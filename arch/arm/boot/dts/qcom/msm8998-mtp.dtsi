@@ -12,7 +12,7 @@
 
 #include <dt-bindings/interrupt-controller/irq.h>
 #include "msm8998-pinctrl.dtsi"
-#include "msm8998-camera-sensor-mtp.dtsi"
+//#include "msm8998-camera-sensor-mtp.dtsi"
 / {
 	bluetooth: bt_wcn3990 {
 		compatible = "qca,wcn3990";
@@ -91,6 +91,10 @@
 	cd-gpios = <&tlmm 95 0x1>;
 
 	status = "ok";
+};
+
+&blsp1_uart2_hs { 
+	status = "ok"; 
 };
 
 &uartblsp2dm1 {
@@ -360,15 +364,6 @@
 	qcom,panel-mode-gpio = <&tlmm 91 0>;
 };
 
-&labibb {
-	status = "ok";
-	qcom,qpnp-labibb-mode = "lcd";
-};
-
-&pmi8998_wled {
-	qcom,led-strings-list = [00 01];
-};
-
 &dsi_dual_nt35597_video {
 	qcom,mdss-dsi-bl-pmic-control-type = "bl_ctrl_wled";
 	qcom,mdss-dsi-bl-min-level = <1>;
@@ -469,12 +464,36 @@
 	qcom,panel-supply-entries = <&dsi_panel_pwr_supply>;
 };
 
-&mem_client_3_size {
-	qcom,peripheral-size = <0x500000>;
+&dsi_sim_cmd {
+	qcom,mdss-dsi-bl-pmic-control-type = "bl_ctrl_wled";
+	qcom,mdss-dsi-bl-min-level = <1>;
+	qcom,mdss-dsi-bl-max-level = <4095>;
+	qcom,panel-supply-entries = <&dsi_panel_pwr_supply>;
 };
 
-&pmi8998_haptics {
-	status = "okay";
+&dsi_sim_vid {
+	qcom,mdss-dsi-bl-pmic-control-type = "bl_ctrl_wled";
+	qcom,mdss-dsi-bl-min-level = <1>;
+	qcom,mdss-dsi-bl-max-level = <4095>;
+	qcom,panel-supply-entries = <&dsi_panel_pwr_supply>;
+};
+
+&dsi_dual_sim_cmd {
+	qcom,mdss-dsi-bl-pmic-control-type = "bl_ctrl_wled";
+	qcom,mdss-dsi-bl-min-level = <1>;
+	qcom,mdss-dsi-bl-max-level = <4095>;
+	qcom,panel-supply-entries = <&dsi_panel_pwr_supply>;
+};
+
+&dsi_dual_sim_vid {
+	qcom,mdss-dsi-bl-pmic-control-type = "bl_ctrl_wled";
+	qcom,mdss-dsi-bl-min-level = <1>;
+	qcom,mdss-dsi-bl-max-level = <4095>;
+	qcom,panel-supply-entries = <&dsi_panel_pwr_supply>;
+};
+
+&mem_client_3_size {
+	qcom,peripheral-size = <0x500000>;
 };
 
 &pm8998_vadc {
@@ -579,10 +598,6 @@
 	};
 };
 
-&wil6210 {
-	status = "ok";
-};
-
 &soc {
 	gpio_keys {
 		compatible = "gpio-keys";
@@ -623,5 +638,6 @@
 		qcom,batt-id-range-pct = <15>;
 		#include "fg-gen3-batterydata-itech-3000mah.dtsi"
 		#include "fg-gen3-batterydata-ascent-3450mah.dtsi"
+		#include "fg-gen3-batterydata-demo-6000mah.dtsi"
 	};
 };

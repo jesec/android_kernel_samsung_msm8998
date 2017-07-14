@@ -450,6 +450,7 @@ int sysmon_send_shutdown(struct subsys_desc *dest_desc)
 
 	reinit_completion(&data->ind_recv);
 	mutex_lock(&sysmon_lock);
+	pr_info("QMI send req to %s\n", dest_ss);
 	ret = qmi_send_req_wait(data->clnt_handle, &req_desc, &req,
 		sizeof(req), &resp_desc, &resp, sizeof(resp), SERVER_TIMEOUT);
 	if (ret < 0) {
@@ -458,6 +459,7 @@ int sysmon_send_shutdown(struct subsys_desc *dest_desc)
 	}
 
 	/* Check the response */
+	pr_info("QMI check resp\n");
 	if (QMI_RESP_BIT_SHIFT(resp.resp.result) != QMI_RESULT_SUCCESS_V01) {
 		pr_err("QMI request failed 0x%x\n",
 					QMI_RESP_BIT_SHIFT(resp.resp.error));
@@ -465,6 +467,7 @@ int sysmon_send_shutdown(struct subsys_desc *dest_desc)
 		goto out;
 	}
 
+	pr_info("Wait for shutdown ack\n");
 	shutdown_ack_ret = wait_for_shutdown_ack(dest_desc);
 	if (shutdown_ack_ret < 0) {
 		pr_err("shutdown_ack SMP2P bit for %s not set\n", data->name);
@@ -476,6 +479,7 @@ int sysmon_send_shutdown(struct subsys_desc *dest_desc)
 	} else if (shutdown_ack_ret > 0)
 		goto out;
 
+	pr_info("Wait for shutdown indication from %s\n", data->name);
 	if (!wait_for_completion_timeout(&data->ind_recv,
 					msecs_to_jiffies(SHUTDOWN_TIMEOUT))) {
 		pr_err("Timed out waiting for shutdown indication from %s\n",
@@ -483,6 +487,7 @@ int sysmon_send_shutdown(struct subsys_desc *dest_desc)
 		ret = -ETIMEDOUT;
 	}
 out:
+	pr_info("Done! ret = %d\n", ret);
 	mutex_unlock(&sysmon_lock);
 	return ret;
 }

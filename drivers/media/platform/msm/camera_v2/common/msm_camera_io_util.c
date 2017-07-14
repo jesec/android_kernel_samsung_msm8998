@@ -25,6 +25,11 @@
 #undef CDBG
 #define CDBG(fmt, args...) pr_debug(fmt, ##args)
 
+#if defined(CONFIG_SENSOR_RETENTION)
+extern bool sensor_retention_mode;
+#endif
+extern bool retention_mode_pwr;
+
 void msm_camera_io_w(u32 data, void __iomem *addr)
 {
 	CDBG("%s: 0x%pK %08x\n", __func__,  (addr), (data));
@@ -430,7 +435,6 @@ int msm_camera_config_vreg(struct device *dev, struct camera_vreg_t *cam_vreg,
 					rc = regulator_set_load(
 						reg_ptr[j],
 						curr_vreg->op_mode);
-					rc = 0;
 					if (rc < 0) {
 						pr_err(
 						"%s:%s set optimum mode fail\n",
@@ -650,6 +654,16 @@ int msm_camera_config_single_vreg(struct device *dev,
 		vreg_name = cam_vreg->reg_name;
 	}
 
+#if defined(CONFIG_SENSOR_RETENTION)
+	/* NOTE: Check cam power for sensor retention*/
+	if (sensor_retention_mode) {
+		if (!strcmp(vreg_name, "s2mpb02-ldo7")) {
+			pr_info("skip cam_vio(s2mpb02-ldo7). now sensor retention mode\n");
+			return 0;
+		}
+	}
+#endif
+
 	if (config) {
 		CDBG("%s enable %s\n", __func__, vreg_name);
 		*reg_ptr = regulator_get(dev, vreg_name);
@@ -662,24 +676,37 @@ int msm_camera_config_single_vreg(struct device *dev,
 			CDBG("%s: voltage min=%d, max=%d\n",
 				__func__, cam_vreg->min_voltage,
 				cam_vreg->max_voltage);
-			rc = regulator_set_voltage(
-				*reg_ptr, cam_vreg->min_voltage,
-				cam_vreg->max_voltage);
-			if (rc < 0) {
-				pr_err("%s: %s set voltage failed\n",
-					__func__, vreg_name);
-				goto vreg_set_voltage_fail;
-			}
-			if (cam_vreg->op_mode >= 0) {
-				rc = regulator_set_load(*reg_ptr,
-					cam_vreg->op_mode);
+#if 1
+			rc = regulator_get_voltage(
+				*reg_ptr);
+			CDBG("%s:%s get voltage %d\n",
+				__func__, vreg_name, rc);
+#endif
+#if 1
+			if ((retention_mode_pwr == 0)
+				|| !strcmp(vreg_name, "s2mpb02-ldo11")) {
+				CDBG("%s:%s set voltage\n", __func__, vreg_name);
+
+				rc = regulator_set_voltage(
+					*reg_ptr, cam_vreg->min_voltage,
+					cam_vreg->max_voltage);
 				if (rc < 0) {
-					pr_err(
-					"%s: %s set optimum mode failed\n",
-					__func__, vreg_name);
-					goto vreg_set_opt_mode_fail;
+					pr_err("%s: %s set voltage failed\n",
+						__func__, vreg_name);
+					goto vreg_set_voltage_fail;
+				}
+				if (cam_vreg->op_mode >= 0) {
+					rc = regulator_set_load(*reg_ptr,
+						cam_vreg->op_mode);
+					if (rc < 0) {
+						pr_err(
+						"%s: %s set optimum mode failed\n",
+						__func__, vreg_name);
+						goto vreg_set_opt_mode_fail;
+					}
 				}
 			}
+#endif
 		}
 		rc = regulator_enable(*reg_ptr);
 		if (rc < 0) {
@@ -753,6 +780,86 @@ int msm_camera_request_gpio_table(struct gpio *gpio_tbl, uint8_t size,
 		}
 	} else {
 		gpio_free_array(gpio_tbl, size);
+	}
+	return rc;
+}
+
+int msm_camera_request_s_gpio_table(struct msm_camera_power_ctrl_t *ctrl,
+	int gpio_en, bool shared)
+{
+	int rc = 0, i = 0, err = 0, j = 0;
+	struct gpio *gpio_tbl;
+	uint8_t size;
+	bool skip_gpio = false;
+
+	if (!ctrl || !ctrl->gpio_conf) {
+		pr_err("%s:%d invalid ctrl or gpio_conf!!\n", __func__, __LINE__);
+		return -EINVAL;
+	}
+
+	gpio_tbl = ctrl->gpio_conf->cam_gpio_req_tbl;
+	size = ctrl->gpio_conf->cam_gpio_req_tbl_size;
+
+	if (!gpio_tbl || !size) {
+		pr_err("%s:%d invalid gpio_tbl %pK / size %d\n", __func__,
+			__LINE__, gpio_tbl, size);
+		return -EINVAL;
+	}
+
+	for (i = 0; i < size; i++) {
+		CDBG("%s:%d i %d, gpio %d dir %ld\n", __func__, __LINE__, i,
+			gpio_tbl[i].gpio, gpio_tbl[i].flags);
+	}
+
+	if (gpio_en) {
+		for (i = 0; i < size; i++) {
+			if (shared) {
+				skip_gpio = false;
+				for (j = 0; j < ctrl->num_shared_gpios; j++) {
+					if (gpio_tbl[i].gpio == ctrl->shared_gpios[j]) {
+						skip_gpio = true;
+						break;
+					}
+				}
+				if (skip_gpio) {
+					CDBG("%s [POWER_DBG] enable : %d skiped!\n",
+						__func__, gpio_tbl[i].gpio);
+					continue;
+				}
+			}
+
+			err = gpio_request_one(gpio_tbl[i].gpio,
+				gpio_tbl[i].flags, gpio_tbl[i].label);
+			if (err) {
+				/*
+				* After GPIO request fails, contine to
+				* apply new gpios, outout a error message
+				* for driver bringup debug
+				*/
+				pr_err("%s:%d gpio %d:%s request fails\n",
+					__func__, __LINE__,
+					gpio_tbl[i].gpio, gpio_tbl[i].label);
+			}
+		}
+	} else {
+		if (shared) {
+			for (i = 0; i < size; i++) {
+				skip_gpio = false;
+				for (j = 0; j < ctrl->num_shared_gpios; j++) {
+					if (gpio_tbl[i].gpio == ctrl->shared_gpios[j]) {
+						skip_gpio = true;
+						break;
+					}
+				}
+				if (skip_gpio) {
+					CDBG("%s [POWER_DBG] disable : %d skiped!\n",
+						__func__, gpio_tbl[i].gpio);
+					continue;
+				}
+				gpio_free(gpio_tbl[i].gpio);
+			}
+		} else
+		    gpio_free_array(gpio_tbl, size);
 	}
 	return rc;
 }

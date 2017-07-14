@@ -366,7 +366,9 @@ static int dwc3_ep0_handle_status(struct dwc3 *dwc,
 	int ret;
 	struct dwc3_ep		*dep;
 	u32			recip;
+#ifndef CONFIG_USB_ANDROID_SAMSUNG_DISABLE_U1_U2
 	u32			reg;
+#endif
 	u16			usb_status = 0;
 	__le16			*response_pkt;
 
@@ -378,6 +380,7 @@ static int dwc3_ep0_handle_status(struct dwc3 *dwc,
 		 */
 		usb_status |= dwc->gadget.is_selfpowered;
 
+#ifndef CONFIG_USB_ANDROID_SAMSUNG_DISABLE_U1_U2
 		if (dwc->speed == DWC3_DSTS_SUPERSPEED) {
 			reg = dwc3_readl(dwc->regs, DWC3_DCTL);
 			if (reg & DWC3_DCTL_INITU1ENA)
@@ -388,6 +391,7 @@ static int dwc3_ep0_handle_status(struct dwc3 *dwc,
 			usb_status |= dwc->gadget.remote_wakeup <<
 				USB_DEVICE_REMOTE_WAKEUP;
 		}
+#endif
 
 		break;
 
@@ -433,7 +437,9 @@ static int dwc3_ep0_handle_feature(struct dwc3 *dwc,
 	u32			recip;
 	u32			wValue;
 	u32			wIndex;
+#ifndef CONFIG_USB_ANDROID_SAMSUNG_DISABLE_U1_U2
 	u32			reg;
+#endif
 	int			ret;
 	enum usb_device_state	state;
 
@@ -451,6 +457,7 @@ static int dwc3_ep0_handle_feature(struct dwc3 *dwc,
 					(set ? "enabled" : "disabled"));
 			dwc->gadget.remote_wakeup = set;
 			break;
+#ifndef CONFIG_USB_ANDROID_SAMSUNG_DISABLE_U1_U2
 		/*
 		 * 9.4.1 says only only for SS, in AddressState only for
 		 * default control pipe
@@ -488,6 +495,7 @@ static int dwc3_ep0_handle_feature(struct dwc3 *dwc,
 				reg &= ~DWC3_DCTL_INITU2ENA;
 			dwc3_writel(dwc->regs, DWC3_DCTL, reg);
 			break;
+#endif
 
 		case USB_DEVICE_LTM_ENABLE:
 			return -EINVAL;
@@ -584,7 +592,9 @@ static int dwc3_ep0_set_config(struct dwc3 *dwc, struct usb_ctrlrequest *ctrl)
 	enum usb_device_state state = dwc->gadget.state;
 	u32 cfg;
 	int ret;
+#ifndef CONFIG_USB_ANDROID_SAMSUNG_DISABLE_U1_U2
 	u32 reg;
+#endif
 
 	cfg = le16_to_cpu(ctrl->wValue);
 
@@ -606,7 +616,7 @@ static int dwc3_ep0_set_config(struct dwc3 *dwc, struct usb_ctrlrequest *ctrl)
 			if (ret == 0)
 				usb_gadget_set_state(&dwc->gadget,
 						USB_STATE_CONFIGURED);
-
+#ifndef CONFIG_USB_ANDROID_SAMSUNG_DISABLE_U1_U2
 			if (!dwc->usb3_u1u2_disable || enable_dwc3_u1u2) {
 				/*
 				 * Enable transition to U1/U2 state when
@@ -617,7 +627,7 @@ static int dwc3_ep0_set_config(struct dwc3 *dwc, struct usb_ctrlrequest *ctrl)
 							DWC3_DCTL_ACCEPTU2ENA);
 				dwc3_writel(dwc->regs, DWC3_DCTL, reg);
 			}
-
+#endif
 			dwc->resize_fifos = true;
 			dwc3_trace(trace_dwc3_ep0, "resize FIFOs flag SET");
 		}
@@ -634,7 +644,33 @@ static int dwc3_ep0_set_config(struct dwc3 *dwc, struct usb_ctrlrequest *ctrl)
 	}
 	return ret;
 }
+#ifdef CONFIG_USB_ANDROID_SAMSUNG_COMPOSITE
+static int dwc3_ep0_set_interface(struct dwc3 *dwc, struct usb_ctrlrequest *ctrl)
+{
+	u32 alt_setting;
+	enum usb_device_state state = dwc->gadget.state;
+	int ret;
 
+	alt_setting = le16_to_cpu(ctrl->wValue);
+
+	ret = dwc3_ep0_delegate_req(dwc, ctrl);
+
+	switch (state) {
+
+	case USB_STATE_CONFIGURED:
+		/* if the alt_setting matches and the alt_setting is non zero */
+		if (alt_setting && (!ret || (ret == USB_GADGET_DELAYED_STATUS))) {
+			dwc->resize_fifos = true;
+			dev_dbg(dwc->dev, "resize fifos flag SET\n");
+		}
+		break;
+
+	default:
+		dev_err(dwc->dev, "default case\n");
+	}
+	return ret;
+}
+#endif
 static void dwc3_ep0_set_sel_cmpl(struct usb_ep *ep, struct usb_request *req)
 {
 	struct dwc3_ep	*dep = to_dwc3_ep(ep);
@@ -761,6 +797,13 @@ static int dwc3_ep0_std_request(struct dwc3 *dwc, struct usb_ctrlrequest *ctrl)
 		break;
 	case USB_REQ_SET_CONFIGURATION:
 		dwc3_trace(trace_dwc3_ep0, "USB_REQ_SET_CONFIGURATION");
+#ifdef CONFIG_USB_CHARGING_EVENT
+		if(dwc->gadget.speed == USB_SPEED_SUPER)
+			dwc->vbus_current = USB_CURRENT_SUPER_SPEED; 
+		else
+			dwc->vbus_current= USB_CURRENT_HIGH_SPEED;
+		schedule_work(&dwc->set_vbus_current_work);
+#endif
 		ret = dwc3_ep0_set_config(dwc, ctrl);
 		break;
 	case USB_REQ_SET_SEL:
@@ -771,6 +814,12 @@ static int dwc3_ep0_std_request(struct dwc3 *dwc, struct usb_ctrlrequest *ctrl)
 		dwc3_trace(trace_dwc3_ep0, "USB_REQ_SET_ISOCH_DELAY");
 		ret = dwc3_ep0_set_isoch_delay(dwc, ctrl);
 		break;
+#ifdef CONFIG_USB_ANDROID_SAMSUNG_COMPOSITE
+	case USB_REQ_SET_INTERFACE:
+		dev_vdbg(dwc->dev, "USB_REQ_SET_INTERFACE\n");
+		ret = dwc3_ep0_set_interface(dwc, ctrl);
+		break;
+#endif
 	default:
 		dwc3_trace(trace_dwc3_ep0, "Forwarding to gadget driver");
 		ret = dwc3_ep0_delegate_req(dwc, ctrl);

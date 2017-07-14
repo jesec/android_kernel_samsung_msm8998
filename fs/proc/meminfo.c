@@ -17,6 +17,7 @@
 #endif
 #include <asm/page.h>
 #include <asm/pgtable.h>
+#include <linux/show_mem_notifier.h>
 #include "internal.h"
 
 void __attribute__((weak)) arch_report_meminfo(struct seq_file *m)
@@ -223,9 +224,28 @@ static const struct file_operations meminfo_proc_fops = {
 	.release	= single_release,
 };
 
+static int meminfo_extra_proc_show(struct seq_file *m, void *v)
+{
+	show_mem_call_notifiers_simple(m);
+	return 0;
+}
+
+static int meminfo_extra_proc_open(struct inode *inode, struct file *file)
+{
+	return single_open(file, meminfo_extra_proc_show, NULL);
+}
+
+static const struct file_operations meminfo_extra_proc_fops = {
+	.open		= meminfo_extra_proc_open,
+	.read		= seq_read,
+	.llseek		= seq_lseek,
+	.release	= single_release,
+};
+
 static int __init proc_meminfo_init(void)
 {
 	proc_create("meminfo", 0, NULL, &meminfo_proc_fops);
+	proc_create("meminfo_extra", 0, NULL, &meminfo_extra_proc_fops);
 	return 0;
 }
 fs_initcall(proc_meminfo_init);

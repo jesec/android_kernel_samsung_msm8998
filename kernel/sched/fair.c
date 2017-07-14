@@ -80,14 +80,6 @@ static unsigned int sched_nr_latency = 8;
 unsigned int sysctl_sched_child_runs_first __read_mostly;
 
 /*
- * Controls whether, when SD_SHARE_PKG_RESOURCES is on, if all
- * tasks go to idle CPUs when woken. If this is off, note that the
- * per-task flag PF_WAKE_UP_IDLE can still cause a task to go to an
- * idle CPU upon being woken.
- */
-unsigned int __read_mostly sysctl_sched_wake_to_idle;
-
-/*
  * SCHED_OTHER wake-up granularity.
  * (default: 1 msec * (1 + ilog(ncpus)), units: nanoseconds)
  *
@@ -2625,6 +2617,21 @@ struct cluster_cpu_stats {
 	s64 highest_spare_capacity;
 };
 
+/*
+ * Should task be woken to any available idle cpu?
+ *
+ * Waking tasks to idle cpu has mixed implications on both performance and
+ * power. In many cases, scheduler can't estimate correctly impact of using idle
+ * cpus on either performance or power. PF_WAKE_UP_IDLE allows external kernel
+ * module to pass a strong hint to scheduler that the task in question should be
+ * woken to idle cpu, generally to improve performance.
+ */
+static inline int wake_to_idle(struct task_struct *p)
+{
+	return (current->flags & PF_WAKE_UP_IDLE) ||
+		 (p->flags & PF_WAKE_UP_IDLE);
+}
+
 static int spill_threshold_crossed(struct cpu_select_env *env, struct rq *rq)
 {
 	u64 total_load;
@@ -2856,10 +2863,12 @@ next_best_cluster(struct sched_cluster *cluster, struct cpu_select_env *env,
 static void __update_cluster_stats(int cpu, struct cluster_cpu_stats *stats,
 				   struct cpu_select_env *env, int cpu_cost)
 {
-	int wakeup_latency;
+	int wakeup_latency=0;
 	int prev_cpu = env->prev_cpu;
+	int ignore_cstate_awareness = sched_get_ignore_cstate_awareness(cpu);
 
-	wakeup_latency = cpu_rq(cpu)->wakeup_latency;
+	if (!ignore_cstate_awareness)
+		wakeup_latency = cpu_rq(cpu)->wakeup_latency;
 
 	if (env->need_idle) {
 		stats->min_cost = cpu_cost;
@@ -2905,7 +2914,7 @@ static void __update_cluster_stats(int cpu, struct cluster_cpu_stats *stats,
 	}
 
 	/* C-state is the same. Use prev CPU to break the tie */
-	if (cpu == prev_cpu) {
+	if (cpu == prev_cpu && !ignore_cstate_awareness) {
 		stats->best_cpu = cpu;
 		env->sbc_best_flag = SBC_FLAG_COST_CSTATE_PREV_CPU_TIE_BREAKER;
 		return;
@@ -2976,6 +2985,8 @@ static void find_best_cpu_in_cluster(struct sched_cluster *c,
 	if (env->ignore_prev_cpu)
 		cpumask_clear_cpu(env->prev_cpu, &search_cpus);
 
+	env->need_idle = wake_to_idle(env->p) || c->wake_up_idle;
+
 	for_each_cpu(i, &search_cpus) {
 		env->cpu_load = cpu_load_sync(i, env->sync);
 
@@ -3017,21 +3028,6 @@ static inline void init_cluster_cpu_stats(struct cluster_cpu_stats *stats)
 	stats->least_loaded_cpu = -1;
 	stats->best_cpu_wakeup_latency = INT_MAX;
 	/* No need to initialize stats->best_load */
-}
-
-/*
- * Should task be woken to any available idle cpu?
- *
- * Waking tasks to idle cpu has mixed implications on both performance and
- * power. In many cases, scheduler can't estimate correctly impact of using idle
- * cpus on either performance or power. PF_WAKE_UP_IDLE allows external kernel
- * module to pass a strong hint to scheduler that the task in question should be
- * woken to idle cpu, generally to improve performance.
- */
-static inline int wake_to_idle(struct task_struct *p)
-{
-	return (current->flags & PF_WAKE_UP_IDLE) ||
-		 (p->flags & PF_WAKE_UP_IDLE) || sysctl_sched_wake_to_idle;
 }
 
 static inline bool
@@ -3248,7 +3244,6 @@ out:
 }
 
 #ifdef CONFIG_CFS_BANDWIDTH
-
 static inline struct task_group *next_task_group(struct task_group *tg)
 {
 	tg = list_entry_rcu(tg->list.next, typeof(struct task_group), list);
@@ -6018,9 +6013,8 @@ static int select_idle_sibling(struct task_struct *p, int target)
 	if (i != target && cpus_share_cache(i, target) && idle_cpu(i))
 		return i;
 
-	if (!sysctl_sched_wake_to_idle &&
-	    !(current->flags & PF_WAKE_UP_IDLE) &&
-	    !(p->flags & PF_WAKE_UP_IDLE))
+	if (!(current->flags & PF_WAKE_UP_IDLE) &&
+			!(p->flags & PF_WAKE_UP_IDLE))
 		return target;
 
 	/*

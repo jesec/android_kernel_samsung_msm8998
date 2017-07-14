@@ -14,6 +14,7 @@
 
 #include <linux/time.h>
 #include <linux/of.h>
+#include <linux/of_platform.h>
 #include <linux/iopoll.h>
 #include <linux/platform_device.h>
 
@@ -24,6 +25,8 @@
 #include <soc/qcom/scm.h>
 #include <linux/phy/phy.h>
 #include <linux/phy/phy-qcom-ufs.h>
+#include <linux/gpio.h>
+#include <linux/of_gpio.h>
 
 #include "ufshcd.h"
 #include "ufshcd-pltfrm.h"
@@ -34,6 +37,7 @@
 #include "ufs-qcom-ice.h"
 #include "ufs-qcom-debugfs.h"
 #include <linux/clk/msm-clk.h>
+#include <linux/sched/core_ctl.h>
 
 /* TODO: further tuning for this parameter may be required */
 #define UFS_QCOM_PM_QOS_UNVOTE_TIMEOUT_US	(10000) /* microseconds */
@@ -774,9 +778,110 @@ out:
 	return err;
 }
 
+static void ufs_qcom_dev_hw_reset(struct ufs_hba *hba)
+{
+	struct device *dev = hba->dev;
+	struct pinctrl *ufs_hw_reset_pinctrl;
+	struct pinctrl_state *ufs_power_on;
+	struct pinctrl_state *ufs_power_off;
+	int ret = 0;
+
+	if (!gpio_is_valid(hba->hw_reset_gpio))
+		return;
+
+	ufs_hw_reset_pinctrl = devm_pinctrl_get(dev);
+	if (IS_ERR(ufs_hw_reset_pinctrl)) {
+		pr_err("%s: pinctrl_get is failed.\n", __func__);
+	} else {
+		ufs_power_on = pinctrl_lookup_state(ufs_hw_reset_pinctrl, "ufs_poweron");
+		if (IS_ERR(ufs_power_on)) {
+			pr_err("%s: fail to ufs_poweron lookup_state.\n", __func__);
+			goto out;
+		}
+
+		ufs_power_off = pinctrl_lookup_state(ufs_hw_reset_pinctrl, "ufs_poweroff");
+		if (IS_ERR(ufs_power_off)) {
+			pr_err("%s: fail to ufs_poweroff lookup_state.\n", __func__);
+			goto out;
+		}
+
+		ret = pinctrl_select_state(ufs_hw_reset_pinctrl, ufs_power_off);
+		if (ret)
+			pr_err("%s: fail to select_state ufs power off.\n", __func__);
+		else
+			pr_err("UFS %s done.\n", "off");
+
+		udelay(5);
+
+		ret = pinctrl_select_state(ufs_hw_reset_pinctrl, ufs_power_on);
+		if (ret)
+			pr_err("%s: fail to select_state ufs power on.\n", __func__);
+		else
+			pr_err("UFS %s done.\n", "on");
+
+ out:
+		devm_pinctrl_put(ufs_hw_reset_pinctrl);
+	}
+}
+
 static int ufs_qcom_full_reset(struct ufs_hba *hba)
 {
+	struct ufs_qcom_host *host = ufshcd_get_variant(hba);
 	int ret = -ENOTSUPP;
+
+	host->hw_reset_count++;
+	host->last_hw_reset = (unsigned long)ktime_to_us(ktime_get());
+	host->hw_reset_saved_err = hba->saved_err;
+	host->hw_reset_saved_uic_err = hba->saved_uic_err;
+	host->hw_reset_outstanding_tasks = hba->outstanding_tasks;
+	host->hw_reset_outstanding_reqs = hba->outstanding_reqs;
+	memcpy(&host->hw_reset_ufs_stats, &hba->ufs_stats, sizeof(struct ufs_stats));
+
+	msleep(2000);
+
+	if (!hba->core_reset) {
+		dev_err(hba->dev, "%s: failed, err = %d\n", __func__,
+				ret);
+		goto out;
+	}
+
+	ret = reset_control_assert(hba->core_reset);
+	if (ret) {
+		dev_err(hba->dev, "%s: core_reset assert failed, err = %d\n",
+				__func__, ret);
+		goto out;
+	}
+
+	/*
+	 * The hardware requirement for delay between assert/deassert
+	 * is at least 3-4 sleep clock (32.7KHz) cycles, which comes to
+	 * ~125us (4/32768). To be on the safe side add 200us delay.
+	 */
+	usleep_range(200, 210);
+
+	ret = reset_control_deassert(hba->core_reset);
+	if (ret)
+		dev_err(hba->dev, "%s: core_reset deassert failed, err = %d\n",
+				__func__, ret);
+
+out:
+	return ret;
+}
+
+static int ufs_qcom_full_reset_set_delay(struct ufs_hba *hba, int set_mdelay)
+{
+	struct ufs_qcom_host *host = ufshcd_get_variant(hba);
+	int ret = -ENOTSUPP;
+
+	host->hw_reset_count++;
+	host->last_hw_reset = (unsigned long)ktime_to_us(ktime_get());
+	host->hw_reset_saved_err = hba->saved_err;
+	host->hw_reset_saved_uic_err = hba->saved_uic_err;
+	host->hw_reset_outstanding_tasks = hba->outstanding_tasks;
+	host->hw_reset_outstanding_reqs = hba->outstanding_reqs;
+	memcpy(&host->hw_reset_ufs_stats, &hba->ufs_stats, sizeof(struct ufs_stats));
+
+	msleep(set_mdelay);
 
 	if (!hba->core_reset) {
 		dev_err(hba->dev, "%s: failed, err = %d\n", __func__,
@@ -822,7 +927,8 @@ static int ufs_qcom_crypto_req_setup(struct ufs_hba *hba,
 
 	/* Use request LBA as the DUN value */
 	if (req->bio)
-		*dun = req->bio->bi_iter.bi_sector;
+		*dun = (req->bio->bi_iter.bi_sector) >>
+				UFS_QCOM_ICE_TR_DATA_UNIT_4_KB;
 
 	ret = ufs_qcom_ice_req_setup(host, lrbp->cmd, cc_index, enable);
 
@@ -1103,6 +1209,14 @@ static int ufs_qcom_set_bus_vote(struct ufs_hba *hba, bool on)
 		if (vote == host->bus_vote.min_bw_vote)
 			ufs_qcom_update_bus_bw_vote(host);
 	} else {
+                // set the vote to say PWM G1 L2 first before setting vote to 0
+                vote =  ufs_qcom_get_bus_vote(host, "PWM_G1_L2");
+                err = __ufs_qcom_set_bus_vote(host, vote);
+
+                if (err)
+                        dev_err(hba->dev, "%s: set bus vote failed %d\n",__func__, err);
+
+                // now set the vote to 0 as before
 		vote = host->bus_vote.min_bw_vote;
 	}
 
@@ -1428,6 +1542,9 @@ static void ufs_qcom_advertise_quirks(struct ufs_hba *hba)
 	}
 
 	if (host->disable_lpm)
+		hba->quirks |= UFSHCD_QUIRK_BROKEN_AUTO_HIBERN8;
+
+	if (!(hba->caps & UFSHCD_CAP_AUTO_HIBERN8))
 		hba->quirks |= UFSHCD_QUIRK_BROKEN_AUTO_HIBERN8;
 }
 
@@ -1961,6 +2078,9 @@ static int ufs_qcom_init(struct ufs_hba *hba)
 	struct platform_device *pdev = to_platform_device(dev);
 	struct ufs_qcom_host *host;
 	struct resource *res;
+	struct pinctrl *ufs_hw_reset_pinctrl;
+	struct pinctrl_state *ufs_power_on;
+	int ret = 0;
 
 	if (strlen(android_boot_dev) && strcmp(android_boot_dev, dev_name(dev)))
 		return -ENODEV;
@@ -1974,6 +2094,8 @@ static int ufs_qcom_init(struct ufs_hba *hba)
 
 	/* Make a two way bind between the qcom host and the hba */
 	host->hba = hba;
+	spin_lock_init(&host->ice_work_lock);
+
 	ufshcd_set_variant(hba, host);
 
 	err = ufs_qcom_ice_get_dev(host);
@@ -2087,6 +2209,28 @@ static int ufs_qcom_init(struct ufs_hba *hba)
 		dev_warn(dev, "%s: failed to configure the testbus %d\n",
 				__func__, err);
 		err = 0;
+	}
+
+	if (!gpio_is_valid(hba->hw_reset_gpio))
+		goto out;
+
+	ufs_hw_reset_pinctrl = devm_pinctrl_get(dev);
+	if (IS_ERR(ufs_hw_reset_pinctrl)) {
+		pr_err("%s: pinctrl_get is failed.\n", __func__);
+	} else {
+		ufs_power_on = pinctrl_lookup_state(ufs_hw_reset_pinctrl, "ufs_poweron");
+		if (IS_ERR(ufs_power_on)) {
+			pr_err("%s: fail to ufs_poweron lookup_state.\n", __func__);
+			goto out;
+		}
+
+		ret = pinctrl_select_state(ufs_hw_reset_pinctrl, ufs_power_on);
+		if (ret)
+			pr_err("%s: fail to select_state ufs power on.\n", __func__);
+		else
+			pr_err("UFS set %s done.\n", "on");
+
+		devm_pinctrl_put(ufs_hw_reset_pinctrl);
 	}
 
 	goto out;
@@ -2443,6 +2587,11 @@ static bool ufs_qcom_testbus_cfg_is_ok(struct ufs_qcom_host *host)
 	return true;
 }
 
+/*
+ * The caller of this function must make sure that the controller
+ * is out of runtime suspend and appropriate clocks are enabled
+ * before accessing.
+ */
 int ufs_qcom_testbus_config(struct ufs_qcom_host *host)
 {
 	int reg;
@@ -2513,8 +2662,6 @@ int ufs_qcom_testbus_config(struct ufs_qcom_host *host)
 	}
 	mask <<= offset;
 
-	pm_runtime_get_sync(host->hba->dev);
-	ufshcd_hold(host->hba, false);
 	ufshcd_rmwl(host->hba, TEST_BUS_SEL,
 		    (u32)host->testbus.select_major << 19,
 		    REG_UFS_CFG1);
@@ -2527,8 +2674,6 @@ int ufs_qcom_testbus_config(struct ufs_qcom_host *host)
 	 * committed before returning.
 	 */
 	mb();
-	ufshcd_release(host->hba, false);
-	pm_runtime_put_sync(host->hba->dev);
 
 	return 0;
 }
@@ -2537,7 +2682,7 @@ static void ufs_qcom_testbus_read(struct ufs_hba *hba)
 {
 	ufs_qcom_dump_regs(hba, UFS_TEST_BUS, 1, "UFS_TEST_BUS ");
 }
-
+#if 0	// Temporary : It's not used 
 static void ufs_qcom_print_unipro_testbus(struct ufs_hba *hba)
 {
 	struct ufs_qcom_host *host = ufshcd_get_variant(hba);
@@ -2558,7 +2703,7 @@ static void ufs_qcom_print_unipro_testbus(struct ufs_hba *hba)
 			16, 4, testbus, testbus_len, false);
 	kfree(testbus);
 }
-
+#endif
 static void ufs_qcom_dump_dbg_regs(struct ufs_hba *hba, bool no_sleep)
 {
 	struct ufs_qcom_host *host = ufshcd_get_variant(hba);
@@ -2575,11 +2720,38 @@ static void ufs_qcom_dump_dbg_regs(struct ufs_hba *hba, bool no_sleep)
 	usleep_range(1000, 1100);
 	ufs_qcom_testbus_read(hba);
 	usleep_range(1000, 1100);
-	ufs_qcom_print_unipro_testbus(hba);
-	usleep_range(1000, 1100);
 	ufs_qcom_phy_dbg_register_dump(phy);
 	usleep_range(1000, 1100);
 	ufs_qcom_ice_print_regs(host);
+}
+
+static void ufs_qcom_set_irq_mask(struct ufs_hba *hba, bool on)
+{
+	bool boost;
+	struct cpumask mask, irq_mask;
+	struct ufs_qcom_host *host = ufshcd_get_variant(hba);
+	struct ufs_pa_layer_attr *attr = &host->dev_req_params;
+	int gear;
+
+	if (!host)
+		return;
+
+	gear =  max_t(u32, attr->gear_rx, attr->gear_tx);
+
+	if (on && gear == UFS_HS_G3) {
+		boost = 1;
+		cpumask_copy(&mask, cpu_coregroup_mask(4));
+	} else {
+		boost = 0;
+		cpumask_copy(&mask, cpu_coregroup_mask(0));
+	}
+
+	cpumask_copy(&irq_mask, irq_get_affinity_mask(hba->irq));
+
+	if (!cpumask_equal(&irq_mask, &mask)) {
+		core_ctl_set_boost(boost);
+		irq_set_affinity(hba->irq, &mask);
+	}
 }
 
 /**
@@ -2601,13 +2773,16 @@ static struct ufs_hba_variant_ops ufs_hba_qcom_vops = {
 	.suspend		= ufs_qcom_suspend,
 	.resume			= ufs_qcom_resume,
 	.full_reset		= ufs_qcom_full_reset,
+	.full_reset_set_delay	= ufs_qcom_full_reset_set_delay,
 	.update_sec_cfg		= ufs_qcom_update_sec_cfg,
 	.get_scale_down_gear	= ufs_qcom_get_scale_down_gear,
 	.set_bus_vote		= ufs_qcom_set_bus_vote,
 	.dbg_register_dump	= ufs_qcom_dump_dbg_regs,
+	.dev_hw_reset           = ufs_qcom_dev_hw_reset,
 #ifdef CONFIG_DEBUG_FS
 	.add_debugfs		= ufs_qcom_dbg_add_debugfs,
 #endif
+	.set_irq_mask		= ufs_qcom_set_irq_mask,
 };
 
 static struct ufs_hba_crypto_variant_ops ufs_hba_crypto_variant_ops = {

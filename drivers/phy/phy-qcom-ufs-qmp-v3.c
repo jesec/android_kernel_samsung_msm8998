@@ -16,6 +16,7 @@
 
 #define UFS_PHY_NAME "ufs_phy_qmp_v3"
 
+bool SEC_ufs_NOP_retrying;
 static
 int ufs_qcom_phy_qmp_v3_phy_calibrate(struct ufs_qcom_phy *ufs_qcom_phy,
 					bool is_rate_B)
@@ -31,11 +32,21 @@ int ufs_qcom_phy_qmp_v3_phy_calibrate(struct ufs_qcom_phy *ufs_qcom_phy,
 	tbl_B = phy_cal_table_rate_B;
 
 	if ((major == 0x3) && (minor == 0x000) && (step == 0x0000)) {
-		tbl_A = phy_cal_table_rate_A_3_0_0;
-		tbl_size_A = ARRAY_SIZE(phy_cal_table_rate_A_3_0_0);
+		if (SEC_ufs_NOP_retrying) {
+			tbl_A = phy_cal_table_rate_A_3_0_0_r;
+			tbl_size_A = ARRAY_SIZE(phy_cal_table_rate_A_3_0_0_r);
+		} else {
+			tbl_A = phy_cal_table_rate_A_3_0_0;
+			tbl_size_A = ARRAY_SIZE(phy_cal_table_rate_A_3_0_0);
+		}
 	} else if ((major == 0x3) && (minor == 0x001) && (step == 0x0000)) {
-		tbl_A = phy_cal_table_rate_A_3_1_0;
-		tbl_size_A = ARRAY_SIZE(phy_cal_table_rate_A_3_1_0);
+		if (SEC_ufs_NOP_retrying) {
+			tbl_A = phy_cal_table_rate_A_3_1_0_r;
+			tbl_size_A = ARRAY_SIZE(phy_cal_table_rate_A_3_1_0_r);
+		} else {
+			tbl_A = phy_cal_table_rate_A_3_1_0;
+			tbl_size_A = ARRAY_SIZE(phy_cal_table_rate_A_3_1_0);
+		}
 	} else {
 		dev_err(ufs_qcom_phy->dev,
 			"%s: Unknown UFS-PHY version (major 0x%x minor 0x%x step 0x%x), no calibration values\n",

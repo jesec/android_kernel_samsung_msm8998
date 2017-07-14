@@ -207,6 +207,14 @@ static int mdss_smmu_attach_v2(struct mdss_data_type *mdata)
 					goto err;
 				}
 				mdss_smmu->domain_attached = true;
+				if (mdss_smmu->domain_reattach) {
+					pr_debug("iommu v2 domain[%i] remove extra vote\n",
+							i);
+					/* remove extra power vote */
+					mdss_smmu_enable_power(mdss_smmu, false);
+				}
+
+				mdss_smmu->domain_reattach = false;
 				pr_debug("iommu v2 domain[%i] attached\n", i);
 			}
 		} else {
@@ -264,6 +272,11 @@ static int mdss_smmu_detach_v2(struct mdss_data_type *mdata)
 				 */
 				arm_iommu_detach_device(mdss_smmu->dev);
 				mdss_smmu->domain_attached = false;
+				/*
+				 * since we are leaving clocks on, on
+				 * re-attach do not vote for clocks
+				 */
+				mdss_smmu->domain_reattach = true;
 				pr_debug("iommu v2 domain[%i] detached\n", i);
 			} else {
 				mdss_smmu_enable_power(mdss_smmu, false);
@@ -305,12 +318,80 @@ static struct dma_buf_attachment *mdss_smmu_dma_buf_attach_v2(
  * From which we can take the virtual address and size allocated.
  * msm_map_dma_buf is depricated with smmu v2 and it uses dma_map_sg instead
  */
+#if defined(CONFIG_FB_MSM_MDSS_SAMSUNG)
+#include "samsung/ss_dsi_panel_common.h"
+
+static struct kmem_cache *vdd_smmu_debug_cache;
+struct list_head vdd_smmu_debug_list;
+spinlock_t vdd_smmu_debug_lock;
+static int vdd_smmu_debug_max_pipe;
+static unsigned int vdd_smmu_debug_cnt;
+ 
+struct vdd_smmu_debug {
+	ktime_t time;
+
+	int domain; /* To check which domain */
+	struct file *file; /* To compare wiht task open file */
+	struct sg_table *table; /*To compare with whole ion buffer(page_link) */
+	struct list_head list;
+};
+
+void vdd_smmu_debug_attach(int domain, struct file *file, struct sg_table *table)
+{
+	struct vdd_smmu_debug *vdd_debug = kmem_cache_alloc(vdd_smmu_debug_cache, GFP_KERNEL);
+
+	spin_lock(&vdd_smmu_debug_lock);
+
+	if (!IS_ERR_OR_NULL(vdd_debug)) {
+		vdd_debug->time = ktime_get();
+		vdd_debug->domain = domain;
+		vdd_debug->file = file;
+		vdd_debug->table = table;
+		INIT_LIST_HEAD(&vdd_debug->list);
+		list_add(&vdd_debug->list, &vdd_smmu_debug_list);
+
+		vdd_smmu_debug_cnt++;
+		if (vdd_smmu_debug_cnt > (MAX_PLANES * vdd_smmu_debug_max_pipe))
+			pr_err("%s mdss_smmu_map_dma_buf use too many images : %d\n ", __func__, vdd_smmu_debug_cnt);
+	}
+
+	spin_unlock(&vdd_smmu_debug_lock);
+}
+
+void vdd_smmu_debug_detach(struct sg_table *table)
+{
+	struct vdd_smmu_debug *vdd_debug = NULL;
+
+	spin_lock(&vdd_smmu_debug_lock);
+
+	list_for_each_entry(vdd_debug, &vdd_smmu_debug_list, list) {
+		if (vdd_debug->table == table) {
+			list_del(&vdd_debug->list);
+			kmem_cache_free(vdd_smmu_debug_cache, vdd_debug);
+
+			if (vdd_smmu_debug_cnt > 0)
+				vdd_smmu_debug_cnt--;
+			else
+				pr_err("%s mdss_smmu_map_dma_buf not matched : %d\n ", __func__, vdd_smmu_debug_cnt);
+
+			break;
+		}
+	}
+
+	spin_unlock(&vdd_smmu_debug_lock);
+}
+#endif
 static int mdss_smmu_map_dma_buf_v2(struct dma_buf *dma_buf,
 		struct sg_table *table, int domain, dma_addr_t *iova,
 		unsigned long *size, int dir)
 {
 	int rc;
 	struct mdss_smmu_client *mdss_smmu = mdss_smmu_get_cb(domain);
+
+#if defined(CONFIG_FB_MSM_MDSS_SAMSUNG)
+	int retry_cnt;
+#endif
+
 	if (!mdss_smmu) {
 		pr_err("not able to get smmu context\n");
 		return -EINVAL;
@@ -318,6 +399,24 @@ static int mdss_smmu_map_dma_buf_v2(struct dma_buf *dma_buf,
 	ATRACE_BEGIN("map_buffer");
 	rc = msm_dma_map_sg_lazy(mdss_smmu->dev, table->sgl, table->nents, dir,
 		dma_buf);
+
+#if defined(CONFIG_FB_MSM_MDSS_SAMSUNG)
+	if (!in_interrupt()) {
+		if (rc != table->nents) {
+			for (retry_cnt = 0; retry_cnt < 62 ; retry_cnt++) {
+				/* To wait free page by memory reclaim*/
+				msleep(16);
+
+				pr_err("dma map sg failed : retry (%d)\n", retry_cnt);
+				rc = msm_dma_map_sg_lazy(mdss_smmu->dev, table->sgl, table->nents, dir, dma_buf);
+
+				if (rc == table->nents)
+					break;
+			}
+		}
+	}
+#endif
+
 	if (rc != table->nents) {
 		pr_err("dma map sg failed\n");
 		return -ENOMEM;
@@ -325,6 +424,12 @@ static int mdss_smmu_map_dma_buf_v2(struct dma_buf *dma_buf,
 	ATRACE_END("map_buffer");
 	*iova = table->sgl->dma_address;
 	*size = table->sgl->dma_length;
+
+#if defined(CONFIG_FB_MSM_MDSS_SAMSUNG) && defined(CONFIG_SEC_DEBUG)
+	if (sec_debug_is_enabled())
+		vdd_smmu_debug_attach(domain, dma_buf->file, table);
+#endif
+
 	return 0;
 }
 
@@ -336,6 +441,11 @@ static void mdss_smmu_unmap_dma_buf_v2(struct sg_table *table, int domain,
 		pr_err("not able to get smmu context\n");
 		return;
 	}
+
+#if defined(CONFIG_FB_MSM_MDSS_SAMSUNG) && defined(CONFIG_SEC_DEBUG)
+	if (sec_debug_is_enabled())
+		vdd_smmu_debug_detach(table);
+#endif
 
 	ATRACE_BEGIN("unmap_buffer");
 	msm_dma_unmap_sg(mdss_smmu->dev, table->sgl, table->nents, dir,
@@ -721,6 +831,15 @@ int mdss_smmu_probe(struct platform_device *pdev)
 
 	pr_info("iommu v2 domain[%d] mapping and clk register successful!\n",
 			smmu_domain.domain);
+
+#if defined(CONFIG_FB_MSM_MDSS_SAMSUNG)
+	spin_lock_init(&vdd_smmu_debug_lock);
+	vdd_smmu_debug_max_pipe = mdata->nvig_pipes + mdata->nrgb_pipes + 
+								mdata->ndma_pipes + mdata->ncursor_pipes;
+	INIT_LIST_HEAD(&vdd_smmu_debug_list);
+	vdd_smmu_debug_cache = KMEM_CACHE(vdd_smmu_debug, 0);
+#endif
+
 	return 0;
 
 release_mapping:

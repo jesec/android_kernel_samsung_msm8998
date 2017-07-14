@@ -1,4 +1,4 @@
-/* Copyright (c) 2015-2016, The Linux Foundation. All rights reserved.
+/* Copyright (c) 2015-2017, The Linux Foundation. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -25,6 +25,10 @@
 #include <linux/msm-bus-board.h>
 #include <linux/regulator/consumer.h>
 #include <linux/dma-direction.h>
+#include <soc/qcom/scm.h>
+#include <soc/qcom/rpm-smd.h>
+#include <soc/qcom/secure_buffer.h>
+#include <asm/cacheflush.h>
 
 #include "sde_rotator_base.h"
 #include "sde_rotator_core.h"
@@ -36,6 +40,18 @@
 #include "sde_rotator_r3.h"
 #include "sde_rotator_trace.h"
 #include "sde_rotator_debug.h"
+
+
+/* Rotator device id to be used in SCM call */
+#define SDE_ROTATOR_DEVICE	21
+
+/* SCM call function id to be used for switching between secure and non
+ * secure context
+ */
+#define MEM_PROTECT_SD_CTRL_SWITCH 0x18
+
+/* Rotator secure SID */
+#define SDE_ROTATOR_SECURE_SID  0xe01
 
 /* waiting for hw time out, 3 vsync for 30fps*/
 #define ROT_HW_ACQUIRE_TIMEOUT_IN_MS 100
@@ -277,10 +293,10 @@ static void sde_rotator_footswitch_ctrl(struct sde_rot_mgr *mgr, bool on)
 
 	if (WARN_ON(mgr->regulator_enable == on)) {
 		SDEROT_ERR("Regulators already in selected mode on=%d\n", on);
+		SDEROT_EVTLOG(on, -EINVAL);
 		return;
 	}
 
-	SDEROT_EVTLOG(on);
 	SDEROT_DBG("%s: rotator regulators", on ? "Enable" : "Disable");
 
 	if (mgr->ops_hw_pre_pmevent)
@@ -291,12 +307,14 @@ static void sde_rotator_footswitch_ctrl(struct sde_rot_mgr *mgr, bool on)
 	if (ret) {
 		SDEROT_WARN("Rotator regulator failed to %s\n",
 			on ? "enable" : "disable");
+		SDEROT_EVTLOG(on, ret);
 		return;
 	}
 
 	if (mgr->ops_hw_post_pmevent)
-		mgr->ops_hw_post_pmevent(mgr, on);
+		mgr->ops_hw_post_pmevent(mgr, on);	
 
+	SDEROT_EVTLOG(on, true);		
 	mgr->regulator_enable = on;
 }
 
@@ -505,6 +523,7 @@ static int sde_rotator_import_buffer(struct sde_layer_buffer *buffer,
 		planes[i].memory_id = buffer->planes[i].fd;
 		planes[i].offset = buffer->planes[i].offset;
 		planes[i].buffer = buffer->planes[i].buffer;
+		planes[i].handle = buffer->planes[i].handle;
 	}
 
 	ret =  sde_mdp_data_get_and_validate_size(data, planes,
@@ -512,6 +531,80 @@ static int sde_rotator_import_buffer(struct sde_layer_buffer *buffer,
 
 	return ret;
 }
+
+static int sde_rotator_secure_session_ctrl(bool enable)
+{
+	struct sde_rot_data_type *mdata = sde_rot_get_mdata();
+	uint32_t sid_info;
+	struct scm_desc desc;
+	unsigned int resp = 0;
+	int ret = 0;
+
+	if (test_bit(SDE_CAPS_SEC_ATTACH_DETACH_SMMU,
+		mdata->sde_caps_map)) {
+		sid_info = SDE_ROTATOR_SECURE_SID;
+		desc.arginfo = SCM_ARGS(4, SCM_VAL, SCM_RW, SCM_VAL, SCM_VAL);
+		desc.args[0] = SDE_ROTATOR_DEVICE;
+		desc.args[1] = SCM_BUFFER_PHYS(&sid_info);
+		desc.args[2] = sizeof(uint32_t);
+
+		if (!mdata->sec_cam_en && enable) {
+			/*
+			 * Enable secure camera operation
+			 * Send SCM call to hypervisor to switch the
+			 * secure_vmid to secure context
+			 */
+			desc.args[3] = VMID_CP_CAMERA_PREVIEW;
+
+			mdata->sec_cam_en = 1;
+			sde_smmu_secure_ctrl(0);
+
+			dmac_flush_range(&sid_info, &sid_info + 1);
+			ret = scm_call2(SCM_SIP_FNID(SCM_SVC_MP,
+					MEM_PROTECT_SD_CTRL_SWITCH), &desc);
+			resp = desc.ret[0];
+			if (ret) {
+				SDEROT_ERR("scm_call(1) ret=%d, resp=%x\n",
+					ret, resp);
+				/* failure, attach smmu */
+				mdata->sec_cam_en = 0;
+				sde_smmu_secure_ctrl(1);
+				return -EINVAL;
+			}
+
+			SDEROT_DBG("scm_call(1) ret=%d, resp=%x",
+				ret, resp);
+			SDEROT_EVTLOG(1);
+		} else if (mdata->sec_cam_en && !enable) {
+			/*
+			 * Disable secure camera operation
+			 * Send SCM call to hypervisor to switch the
+			 * secure_vmid to non-secure context
+			 */
+			desc.args[3] = VMID_CP_PIXEL;
+			mdata->sec_cam_en = 0;
+
+			dmac_flush_range(&sid_info, &sid_info + 1);
+			ret = scm_call2(SCM_SIP_FNID(SCM_SVC_MP,
+				MEM_PROTECT_SD_CTRL_SWITCH), &desc);
+			resp = desc.ret[0];
+
+			SDEROT_DBG("scm_call(0): ret=%d, resp=%x",
+				ret, resp);
+
+			/* force smmu to reattach */
+			sde_smmu_secure_ctrl(1);
+			SDEROT_EVTLOG(0);
+		}
+	} else {
+		return 0;
+	}
+	if (ret)
+		return ret;
+
+	return resp;
+}
+
 
 static int sde_rotator_map_and_check_data(struct sde_rot_entry *entry)
 {
@@ -521,15 +614,21 @@ static int sde_rotator_map_and_check_data(struct sde_rot_entry *entry)
 	struct sde_mdp_format_params *fmt;
 	struct sde_mdp_plane_sizes ps;
 	bool rotation;
+	bool secure;
 
 	input = &entry->item.input;
 	output = &entry->item.output;
 
 	rotation = (entry->item.flags &  SDE_ROTATION_90) ? true : false;
 
-	ret = sde_smmu_ctrl(1);
-	if (IS_ERR_VALUE(ret))
-		return ret;
+	secure = (entry->item.flags & SDE_ROTATION_SECURE_CAMERA) ?
+			true : false;
+	ret = sde_rotator_secure_session_ctrl(secure);
+	if (ret) {
+		SDEROT_ERR("failed secure session enabling/disabling %d\n",
+			ret);
+		goto end;
+	}
 
 	/* if error during map, the caller will release the data */
 	ret = sde_mdp_data_map(&entry->src_buf, true, DMA_TO_DEVICE);
@@ -585,7 +684,6 @@ static int sde_rotator_map_and_check_data(struct sde_rot_entry *entry)
 	}
 
 end:
-	sde_smmu_ctrl(0);
 
 	return ret;
 }
@@ -641,6 +739,9 @@ static int sde_rotator_import_data(struct sde_rot_mgr *mgr,
 
 	if (entry->item.flags & SDE_ROTATION_EXT_DMA_BUF)
 		flag |= SDE_ROT_EXT_DMA_BUF;
+
+	if (entry->item.flags & SDE_ROTATION_SECURE_CAMERA)
+		flag |= SDE_SECURE_CAMERA_SESSION;
 
 	ret = sde_rotator_import_buffer(input, &entry->src_buf, flag,
 				&mgr->pdev->dev, true);
@@ -840,7 +941,7 @@ static void sde_rotator_put_hw_resource(struct sde_rot_queue *queue,
 static int sde_rotator_init_queue(struct sde_rot_mgr *mgr)
 {
 	int i, size, ret = 0;
-	char name[32];
+	char name[32];	
 
 	size = sizeof(struct sde_rot_queue) * mgr->queue_count;
 	mgr->commitq = devm_kzalloc(mgr->device, size, GFP_KERNEL);
@@ -1133,13 +1234,15 @@ static int sde_rotator_calc_perf(struct sde_rot_mgr *mgr,
 
 	perf->rdot_limit = sde_mdp_get_ot_limit(
 			config->input.width, config->input.height,
-			config->input.format, max_fps, true);
+			config->input.format, config->frame_rate, true);
 	perf->wrot_limit = sde_mdp_get_ot_limit(
 			config->input.width, config->input.height,
-			config->input.format, max_fps, false);
+			config->input.format, config->frame_rate, false);
 
 	SDEROT_DBG("clk:%lu, rdBW:%d, wrBW:%d, rdOT:%d, wrOT:%d\n",
 			perf->clk_rate, read_bw, write_bw, perf->rdot_limit,
+			perf->wrot_limit);
+	SDEROT_EVTLOG(perf->clk_rate, read_bw, write_bw, perf->rdot_limit,
 			perf->wrot_limit);
 	return 0;
 }
@@ -1236,6 +1339,8 @@ static void sde_rotator_commit_handler(struct work_struct *work)
 
 	entry = container_of(work, struct sde_rot_entry, commit_work);
 	request = entry->request;
+	
+	ATRACE_BEGIN(__func__);
 
 	if (!request || !entry->private || !entry->private->mgr) {
 		SDEROT_ERR("fatal error, null request/context/device\n");
@@ -1286,6 +1391,14 @@ static void sde_rotator_commit_handler(struct work_struct *work)
 		entry->item.dst_rect.x, entry->item.dst_rect.y,
 		entry->item.dst_rect.w, entry->item.dst_rect.h);
 
+	ATRACE_INT("sde_smmu_ctrl", 0);
+	ret = sde_smmu_ctrl(1);
+	if (IS_ERR_VALUE(ret)) {
+		SDEROT_ERR("IOMMU attach failed\n");
+		goto smmu_error;
+	}
+	ATRACE_INT("sde_smmu_ctrl", 1);
+
 	ret = sde_rotator_map_and_check_data(entry);
 	if (ret) {
 		SDEROT_ERR("fail to prepare input/output data %d\n", ret);
@@ -1309,8 +1422,12 @@ static void sde_rotator_commit_handler(struct work_struct *work)
 
 	queue_work(entry->doneq->rot_work_queue, &entry->done_work);
 	sde_rot_mgr_unlock(mgr);
+	
+	ATRACE_END(__func__);
 	return;
 error:
+	sde_smmu_ctrl(0);
+smmu_error:
 	sde_rotator_put_hw_resource(entry->commitq, entry, hw);
 get_hw_res_err:
 	sde_rotator_signal_output(entry);
@@ -1343,6 +1460,8 @@ static void sde_rotator_done_handler(struct work_struct *work)
 	entry = container_of(work, struct sde_rot_entry, done_work);
 	request = entry->request;
 
+	ATRACE_BEGIN(__func__);
+	
 	if (!request || !entry->private || !entry->private->mgr) {
 		SDEROT_ERR("fatal error, null request/context/device\n");
 		return;
@@ -1387,6 +1506,7 @@ static void sde_rotator_done_handler(struct work_struct *work)
 	sde_rot_mgr_lock(mgr);
 	sde_rotator_put_hw_resource(entry->commitq, entry, entry->commitq->hw);
 	sde_rotator_signal_output(entry);
+	ATRACE_INT("sde_rot_done", 1);
 	sde_rotator_release_entry(mgr, entry);
 	atomic_dec(&request->pending_count);
 	if (request->retireq && request->retire_work)
@@ -1394,6 +1514,12 @@ static void sde_rotator_done_handler(struct work_struct *work)
 	if (entry->item.ts)
 		entry->item.ts[SDE_ROTATOR_TS_RETIRE] = ktime_get();
 	sde_rot_mgr_unlock(mgr);
+
+	ATRACE_INT("sde_smmu_ctrl", 3);
+	sde_smmu_ctrl(0);
+	ATRACE_INT("sde_smmu_ctrl", 4);
+
+	ATRACE_END(__func__);
 }
 
 static bool sde_rotator_verify_format(struct sde_rot_mgr *mgr,
@@ -1404,19 +1530,20 @@ static bool sde_rotator_verify_format(struct sde_rot_mgr *mgr,
 	u8 out_v_subsample, out_h_subsample;
 
 	if (!sde_rotator_is_valid_pixfmt(mgr, in_fmt->format, true)) {
-		SDEROT_DBG("Invalid input format %x\n", in_fmt->format);
-		return false;
+		SDEROT_ERR("Invalid input format %x\n", in_fmt->format);
+		goto verify_error;
 	}
 
 	if (!sde_rotator_is_valid_pixfmt(mgr, out_fmt->format, false)) {
-		SDEROT_DBG("Invalid output format %x\n", out_fmt->format);
-		return false;
+		SDEROT_ERR("Invalid output format %x\n", out_fmt->format);
+		goto verify_error;
 	}
 
 	if ((in_fmt->is_yuv != out_fmt->is_yuv) ||
-		(in_fmt->pixel_mode != out_fmt->pixel_mode)) {
-		SDEROT_DBG("Rotator does not support CSC\n");
-		return false;
+		(in_fmt->pixel_mode != out_fmt->pixel_mode) ||
+		(in_fmt->unpack_tight != out_fmt->unpack_tight)) {
+		SDEROT_ERR("Rotator does not support CSC\n");
+		goto verify_error;
 	}
 
 	/* Forcing same pixel depth */
@@ -1426,8 +1553,8 @@ static bool sde_rotator_verify_format(struct sde_rot_mgr *mgr,
 			(in_fmt->bits[C2_R_Cr] != out_fmt->bits[C2_R_Cr]) ||
 			(in_fmt->bits[C0_G_Y] != out_fmt->bits[C0_G_Y]) ||
 			(in_fmt->bits[C1_B_Cb] != out_fmt->bits[C1_B_Cb])) {
-			SDEROT_DBG("Bit format does not match\n");
-			return false;
+			SDEROT_ERR("Bit format does not match\n");
+			goto verify_error;
 		}
 	}
 
@@ -1440,89 +1567,163 @@ static bool sde_rotator_verify_format(struct sde_rot_mgr *mgr,
 
 		if ((in_v_subsample != out_h_subsample) ||
 				(in_h_subsample != out_v_subsample)) {
-			SDEROT_DBG("Rotation has invalid subsampling\n");
-			return false;
+			SDEROT_ERR("Rotation has invalid subsampling\n");
+			goto verify_error;
 		}
 	} else {
 		if (in_fmt->chroma_sample != out_fmt->chroma_sample) {
-			SDEROT_DBG("Format subsampling mismatch\n");
-			return false;
+			SDEROT_ERR("Format subsampling mismatch\n");
+			goto verify_error;
 		}
 	}
 
-	SDEROT_DBG("in_fmt=%0d, out_fmt=%d\n", in_fmt->format, out_fmt->format);
 	return true;
+
+verify_error:
+	SDEROT_ERR("in_fmt=0x%x, out_fmt=0x%x\n",
+			in_fmt->format, out_fmt->format);
+	return false;
 }
 
-int sde_rotator_verify_config(struct sde_rot_mgr *mgr,
+static struct sde_mdp_format_params *__verify_input_config(
+		struct sde_rot_mgr *mgr,
+		struct sde_rotation_config *config)
+{
+	struct sde_mdp_format_params *in_fmt;
+	u8 in_v_subsample, in_h_subsample;
+	u32 input;
+	int verify_input_only;
+
+	if (!mgr || !config) {
+		SDEROT_ERR("null parameters\n");
+		return NULL;
+	}
+
+	input = config->input.format;
+	verify_input_only =
+		(config->flags & SDE_ROTATION_VERIFY_INPUT_ONLY) ? 1 : 0;
+
+	in_fmt = sde_get_format_params(input);
+	if (!in_fmt) {
+		if (!verify_input_only)
+			SDEROT_ERR("Unrecognized input format:0x%x\n", input);
+		return NULL;
+	}
+
+	sde_mdp_get_v_h_subsample_rate(in_fmt->chroma_sample,
+		&in_v_subsample, &in_h_subsample);
+
+	/* Dimension of image needs to be divisible by subsample rate  */
+	if ((config->input.height % in_v_subsample) ||
+			(config->input.width % in_h_subsample)) {
+		if (!verify_input_only)
+			SDEROT_ERR(
+				"In ROI, subsample mismatch, w=%d, h=%d, vss%d, hss%d\n",
+					config->input.width,
+					config->input.height,
+					in_v_subsample, in_h_subsample);
+		return NULL;
+	}
+
+	return in_fmt;
+}
+
+static struct sde_mdp_format_params *__verify_output_config(
+		struct sde_rot_mgr *mgr,
+		struct sde_rotation_config *config)
+{
+	struct sde_mdp_format_params *out_fmt;
+	u8 out_v_subsample, out_h_subsample;
+	u32 output;
+	int verify_input_only;
+
+	if (!mgr || !config) {
+		SDEROT_ERR("null parameters\n");
+		return NULL;
+	}
+
+	output = config->output.format;
+	verify_input_only =
+		(config->flags & SDE_ROTATION_VERIFY_INPUT_ONLY) ? 1 : 0;
+
+	out_fmt = sde_get_format_params(output);
+	if (!out_fmt) {
+		if (!verify_input_only)
+			SDEROT_ERR("Unrecognized output format:0x%x\n", output);
+		return NULL;
+
+	}
+
+	sde_mdp_get_v_h_subsample_rate(out_fmt->chroma_sample,
+		&out_v_subsample, &out_h_subsample);
+
+	/* Dimension of image needs to be divisible by subsample rate  */
+	if ((config->output.height % out_v_subsample) ||
+			(config->output.width % out_h_subsample)) {
+		if (!verify_input_only)
+			SDEROT_ERR(
+				"Out ROI, subsample mismatch, w=%d, h=%d, vss%d, hss%d\n",
+					config->output.width,
+					config->output.height,
+					out_v_subsample, out_h_subsample);
+		return NULL;
+	}
+
+	return out_fmt;
+}
+
+int sde_rotator_verify_config_input(struct sde_rot_mgr *mgr,
+		struct sde_rotation_config *config)
+{
+	struct sde_mdp_format_params *in_fmt;
+
+	in_fmt = __verify_input_config(mgr, config);
+	if (!in_fmt)
+		return -EINVAL;
+
+	return 0;
+}
+
+int sde_rotator_verify_config_output(struct sde_rot_mgr *mgr,
+		struct sde_rotation_config *config)
+{
+	struct sde_mdp_format_params *out_fmt;
+
+	out_fmt = __verify_output_config(mgr, config);
+	if (!out_fmt)
+		return -EINVAL;
+
+	return 0;
+}
+
+int sde_rotator_verify_config_all(struct sde_rot_mgr *mgr,
 	struct sde_rotation_config *config)
 {
 	struct sde_mdp_format_params *in_fmt, *out_fmt;
-	u8 in_v_subsample, in_h_subsample;
-	u8 out_v_subsample, out_h_subsample;
-	u32 input, output;
 	bool rotation;
-	int verify_input_only;
 
 	if (!mgr || !config) {
 		SDEROT_ERR("null parameters\n");
 		return -EINVAL;
 	}
 
-	input = config->input.format;
-	output = config->output.format;
 	rotation = (config->flags & SDE_ROTATION_90) ? true : false;
-	verify_input_only =
-		(config->flags & SDE_ROTATION_VERIFY_INPUT_ONLY) ? 1 : 0;
 
-	in_fmt = sde_get_format_params(input);
-	if (!in_fmt) {
-		SDEROT_DBG("Unrecognized input format:%u\n", input);
+	in_fmt = __verify_input_config(mgr, config);
+	if (!in_fmt)
+		return -EINVAL;
+
+	out_fmt = __verify_output_config(mgr, config);
+	if (!out_fmt)
+		return -EINVAL;
+
+	if (!sde_rotator_verify_format(mgr, in_fmt, out_fmt, rotation)) {
+		SDEROT_ERR(
+			"Rot format pairing invalid, in_fmt:0x%x, out_fmt:0x%x\n",
+					config->input.format,
+					config->output.format);
 		return -EINVAL;
 	}
-
-	out_fmt = sde_get_format_params(output);
-	if (!out_fmt) {
-		SDEROT_DBG("Unrecognized output format:%u\n", output);
-		return -EINVAL;
-	}
-
-	sde_mdp_get_v_h_subsample_rate(in_fmt->chroma_sample,
-		&in_v_subsample, &in_h_subsample);
-	sde_mdp_get_v_h_subsample_rate(out_fmt->chroma_sample,
-		&out_v_subsample, &out_h_subsample);
-
-	/* Dimension of image needs to be divisible by subsample rate  */
-	if ((config->input.height % in_v_subsample) ||
-			(config->input.width % in_h_subsample)) {
-		SDEROT_DBG(
-			"In ROI, subsample mismatch, w=%d, h=%d, vss%d, hss%d\n",
-					config->input.width,
-					config->input.height,
-					in_v_subsample, in_h_subsample);
-		return -EINVAL;
-	}
-
-	if ((config->output.height % out_v_subsample) ||
-			(config->output.width % out_h_subsample)) {
-		SDEROT_DBG(
-			"Out ROI, subsample mismatch, w=%d, h=%d, vss%d, hss%d\n",
-					config->output.width,
-					config->output.height,
-					out_v_subsample, out_h_subsample);
-		if (!verify_input_only)
-			return -EINVAL;
-	}
-
-	if (!sde_rotator_verify_format(mgr, in_fmt,
-			out_fmt, rotation)) {
-		SDEROT_DBG(
-			"Rot format pairing invalid, in_fmt:%d, out_fmt:%d\n",
-					input, output);
-		if (!verify_input_only)
-			return -EINVAL;
-	}
-
 	return 0;
 }
 
@@ -1715,7 +1916,7 @@ static void sde_rotator_cancel_request(struct sde_rot_mgr *mgr,
 	for (i = req->count - 1; i >= 0; i--) {
 		entry = req->entries + i;
 		cancel_work_sync(&entry->commit_work);
-		cancel_work_sync(&entry->done_work);
+		cancel_work_sync(&entry->done_work);		
 	}
 	sde_rot_mgr_lock(mgr);
 	SDEROT_DBG("cancel work done\n");
@@ -1929,7 +2130,7 @@ static int sde_rotator_config_session(struct sde_rot_mgr *mgr,
 	int ret = 0;
 	struct sde_rot_perf *perf;
 
-	ret = sde_rotator_verify_config(mgr, config);
+	ret = sde_rotator_verify_config_all(mgr, config);
 	if (ret) {
 		SDEROT_ERR("Rotator verify format failed\n");
 		return ret;
@@ -2086,6 +2287,11 @@ static int sde_rotator_close(struct sde_rot_mgr *mgr,
 		return -EINVAL;
 	}
 
+	/*
+	 * if secure camera session was enabled
+	 * go back to non secure state
+	 */
+	sde_rotator_secure_session_ctrl(false);
 	sde_rotator_release_rotator_perf_session(mgr, private);
 
 	list_del_init(&private->list);
@@ -2108,7 +2314,7 @@ static ssize_t sde_rotator_show_caps(struct device *dev,
 #define SPRINT(fmt, ...) \
 		(cnt += scnprintf(buf + cnt, len - cnt, fmt, ##__VA_ARGS__))
 
-	SPRINT("wb_count=%d\n", mgr->queue_count);
+	SPRINT("queue_count=%d\n", mgr->queue_count);
 	SPRINT("downscale=1\n");
 	SPRINT("ubwc=1\n");
 
@@ -2415,7 +2621,7 @@ static int sde_rotator_register_clk(struct platform_device *pdev,
 
 static void sde_rotator_unregister_clk(struct sde_rot_mgr *mgr)
 {
-	kfree(mgr->rot_clk);
+	devm_kfree(mgr->device, mgr->rot_clk);
 	mgr->rot_clk = NULL;
 	mgr->num_rot_clk = 0;
 }
@@ -2608,15 +2814,18 @@ int sde_rotator_runtime_suspend(struct device *dev)
 
 	if (!mgr) {
 		SDEROT_ERR("null parameters\n");
+		SDEROT_EVTLOG(-ENODEV);
 		return -ENODEV;
 	}
 
 	if (mgr->rot_enable_clk_cnt) {
 		SDEROT_ERR("invalid runtime suspend request %d\n",
 				mgr->rot_enable_clk_cnt);
+		SDEROT_EVTLOG(mgr->rot_enable_clk_cnt, -EBUSY);
 		return -EBUSY;
 	}
 
+	SDEROT_EVTLOG(false);
 	sde_rotator_footswitch_ctrl(mgr, false);
 	ATRACE_END("runtime_active");
 	SDEROT_DBG("exit runtime_active\n");
@@ -2635,9 +2844,11 @@ int sde_rotator_runtime_resume(struct device *dev)
 
 	if (!mgr) {
 		SDEROT_ERR("null parameters\n");
+		SDEROT_EVTLOG(-ENODEV);
 		return -ENODEV;
 	}
 
+	SDEROT_EVTLOG(true);
 	SDEROT_DBG("begin runtime_active\n");
 	ATRACE_BEGIN("runtime_active");
 	sde_rotator_footswitch_ctrl(mgr, true);

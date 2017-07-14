@@ -208,9 +208,8 @@
 		status = "okay";
 		pm8998_l5: regulator-l5 {
 			regulator-min-microvolt = <800000>;
-			regulator-max-microvolt = <800000>;
-			/* Force NPM follows HW0_EN */
-			qcom,init-pin-ctrl-mode = <1>;
+			regulator-max-microvolt = <880000>;
+
 			status = "okay";
 		};
 	};
@@ -1118,15 +1117,5 @@
 		qcom,corner-acc-map = <0x1 0x0>;
 		qcom,acc-sel-l1-bit-pos = <0>;
 		qcom,acc-sel-l1-bit-size = <1>;
-	};
-};
-
-&pmi8998_charger {
-	smb2_vbus: qcom,smb2-vbus {
-		regulator-name = "smb2-vbus";
-	};
-
-	smb2_vconn: qcom,smb2-vconn {
-		regulator-name = "smb2-vconn";
 	};
 };

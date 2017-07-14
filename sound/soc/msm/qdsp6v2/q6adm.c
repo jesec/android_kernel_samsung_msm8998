@@ -27,6 +27,7 @@
 #include <sound/msm-dts-eagle.h>
 #include "msm-dts-srs-tm-config.h"
 #include <sound/adsp_err.h>
+#include <sound/sec_adaptation.h>
 
 #define TIMEOUT_MS 1000
 
@@ -2255,9 +2256,9 @@ int adm_open(int port_id, int path, int rate, int channel_mode, int topology,
 	int port_idx, copp_idx, flags;
 	int tmp_port = q6audio_get_port_id(port_id);
 
-	pr_debug("%s:port %#x path:%d rate:%d mode:%d perf_mode:%d,topo_id %d\n",
+	pr_info("%s:port %#x path:%d rate:%d mode:%d perf_mode:%d,topo_id %d,bit_width %d\n",
 		 __func__, port_id, path, rate, channel_mode, perf_mode,
-		 topology);
+		 topology, bit_width);
 
 	/* For DTS EAGLE only, force 24 bit */
 	if ((topology == ADM_CMD_COPP_OPEN_TOPOLOGY_ID_DTS_HPX) &&
@@ -2310,6 +2311,12 @@ int adm_open(int port_id, int path, int rate, int channel_mode, int topology,
 	}
 
 	if ((topology == VPM_TX_SM_ECNS_COPP_TOPOLOGY) ||
+	    (topology == VPM_TX_SM_LVVEFQ_COPP_TOPOLOGY) ||
+	    (topology == VPM_TX_DM_LVVEFQ_COPP_TOPOLOGY) ||
+	    (topology == VPM_TX_SM_LVSAFQ_COPP_TOPOLOGY) ||
+	    (topology == VOICE_TX_DIAMONDVOICE_FVSAM_SM) ||
+	    (topology == VOICE_TX_DIAMONDVOICE_FVSAM_DM) ||
+	    (topology == VOICE_TX_DIAMONDVOICE_FVSAM_QM) ||
 	    (topology == VPM_TX_DM_FLUENCE_COPP_TOPOLOGY) ||
 	    (topology == VPM_TX_DM_RFECNS_COPP_TOPOLOGY))
 		rate = 16000;

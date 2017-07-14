@@ -28,6 +28,10 @@
 #include <sound/adsp_err.h>
 #include <linux/qdsp6v2/apr_tal.h>
 
+#ifdef CONFIG_SEC_SND_ADAPTATION
+#include <sound/sec_adaptation.h>
+#endif /* CONFIG_SEC_SND_ADAPTATION */
+
 #define WAKELOCK_TIMEOUT	5000
 enum {
 	AFE_COMMON_RX_CAL = 0,
@@ -138,6 +142,9 @@ bool afe_close_done[2] = {true, true};
 static int afe_get_cal_hw_delay(int32_t path,
 				struct audio_cal_hw_delay_entry *entry);
 static int remap_cal_data(struct cal_block_data *cal_block, int cal_index);
+#ifdef CONFIG_SEC_SND_ADAPTATION
+static int afe_get_cal_topology_id(u16 port_id, u32 *topology_id);
+#endif /* CONFIG_SEC_SND_ADAPTATION */
 
 int afe_get_topology(int port_id)
 {
@@ -710,6 +717,9 @@ static int afe_send_cal_block(u16 port_id, struct cal_block_data *cal_block)
 	int						result = 0;
 	int						index = 0;
 	struct afe_audioif_config_command_no_payload	afe_cal;
+#ifdef CONFIG_SEC_SND_ADAPTATION	
+	int topology_id = 0;
+#endif /* CONFIG_SEC_SND_ADAPTATION */	
 
 	if (!cal_block) {
 		pr_debug("%s: No AFE cal to send!\n", __func__);
@@ -729,6 +739,16 @@ static int afe_send_cal_block(u16 port_id, struct cal_block_data *cal_block)
 		result = -EINVAL;
 		goto done;
 	}
+
+#ifdef CONFIG_SEC_SND_ADAPTATION
+	afe_get_cal_topology_id(port_id, &topology_id);
+	if (((port_id == SLIMBUS_0_RX) && (topology_id == AFE_TOPOLOGY_ID_DSM_RX)) ||
+		((port_id == SLIMBUS_0_TX) && (topology_id == AFE_TOPOLOGY_ID_DSM_TX))) {
+		pr_info("%s: AFE port[0x%x] topology[0x%x] is ignore.\n",
+				__func__, port_id, topology_id);
+		goto done;
+	}
+#endif /* CONFIG_SEC_SND_ADAPTATION */	
 
 	afe_cal.hdr.hdr_field = APR_HDR_FIELD(APR_MSG_TYPE_SEQ_CMD,
 				APR_HDR_LEN(APR_HDR_SIZE), APR_PKT_VER);
@@ -2811,7 +2831,7 @@ static int __afe_port_start(u16 port_id, union afe_port_config *afe_config,
 		port_id = VIRTUAL_ID_TO_PORTID(port_id);
 	}
 
-	pr_debug("%s: port id: 0x%x\n", __func__, port_id);
+	pr_info("%s: port id: 0x%x\n", __func__, port_id);
 
 	index = q6audio_get_port_index(port_id);
 	if (index < 0 || index > AFE_MAX_PORTS) {
@@ -4595,7 +4615,7 @@ static ssize_t afe_debug_write(struct file *filp,
 
 	lbuf[cnt] = '\0';
 
-	if (!strncmp(lb_str, "afe_loopback", 12)) {
+	if (!strcmp(lb_str, "afe_loopback")) {
 		rc = afe_get_parameters(lbuf, param, 3);
 		if (!rc) {
 			pr_info("%s: %lu %lu %lu\n", lb_str, param[0], param[1],
@@ -4624,7 +4644,7 @@ static ssize_t afe_debug_write(struct file *filp,
 			rc = -EINVAL;
 		}
 
-	} else if (!strncmp(lb_str, "afe_loopback_gain", 17)) {
+	} else if (!strcmp(lb_str, "afe_loopback_gain")) {
 		rc = afe_get_parameters(lbuf, param, 2);
 		if (!rc) {
 			pr_info("%s: %s %lu %lu\n",
@@ -5069,7 +5089,7 @@ int afe_close(int port_id)
 		ret = -EINVAL;
 		goto fail_cmd;
 	}
-	pr_debug("%s: port_id = 0x%x\n", __func__, port_id);
+	pr_info("%s: port_id = 0x%x\n", __func__, port_id);
 	if ((port_id == RT_PROXY_DAI_001_RX) ||
 			(port_id == RT_PROXY_DAI_002_TX)) {
 		pr_debug("%s: before decrementing pcm_afe_instance %d\n",

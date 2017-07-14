@@ -23,6 +23,12 @@ enum alarmtimer_restart {
 
 #define ALARMTIMER_STATE_INACTIVE	0x00
 #define ALARMTIMER_STATE_ENQUEUED	0x01
+#define pr_alarm(debug_level_mask, args...) \
+	do { \
+		if (debug_mask & ANDROID_ALARM_PRINT_##debug_level_mask) { \
+			pr_info(args); \
+		} \
+	} while (0)
 
 /**
  * struct alarm - Alarm timer structure
@@ -51,6 +57,9 @@ void alarm_restart(struct alarm *alarm);
 int alarm_try_to_cancel(struct alarm *alarm);
 int alarm_cancel(struct alarm *alarm);
 void set_power_on_alarm(void);
+#ifdef CONFIG_RTC_AUTO_PWRON
+int alarm_set_alarm(char *alarm_data);
+#endif /* CONFIG_AUTO_PWRON */
 void power_on_alarm_init(void);
 enum alarmtimer_type clock2alarm(clockid_t clockid);
 
@@ -60,6 +69,9 @@ ktime_t alarm_expires_remaining(const struct alarm *alarm);
 
 /* Provide way to access the rtc device being used by alarmtimers */
 struct rtc_device *alarmtimer_get_rtcdev(void);
+#if defined(CONFIG_RTC_AUTO_PWRON)
+int alarm_set_alarm_boot(char *alarm_data);
+#endif
 #ifdef CONFIG_RTC_DRV_QPNP
 extern bool poweron_alarm;
 #endif

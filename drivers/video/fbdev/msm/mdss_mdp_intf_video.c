@@ -26,8 +26,18 @@
 #include "mdss_debug.h"
 #include "mdss_mdp_trace.h"
 
+#if defined(CONFIG_FB_MSM_MDSS_SAMSUNG)
+#include "samsung/ss_dsi_panel_common.h" /* UTIL HEADER */
+void mdss_mdp_video_pingpong_done(void *arg);
+static int mdss_mdp_video_wait4pingpong(struct mdss_mdp_ctl *ctl, void *arg);
+#endif
+
 /* wait for at least 2 vsyncs for lowest refresh rate (24hz) */
+#if defined(CONFIG_FB_MSM_MDSS_SAMSUNG)
+#define VSYNC_TIMEOUT_US 500000
+#else
 #define VSYNC_TIMEOUT_US 100000
+#endif
 
 /* Poll time to do recovery during active region */
 #define POLL_TIME_USEC_FOR_LN_CNT 500
@@ -75,6 +85,9 @@ struct mdss_mdp_video_ctx {
 	bool polling_en;
 	u32 poll_cnt;
 	struct completion vsync_comp;
+#if defined(CONFIG_FB_MSM_MDSS_SAMSUNG)
+	struct completion pp_comp;
+#endif
 	int wait_pending;
 
 	atomic_t vsync_ref;
@@ -1424,7 +1437,9 @@ static int mdss_mdp_video_config_fps(struct mdss_mdp_ctl *ctl, int new_fps)
 				pdata->panel_info.dfps_update
 				== DFPS_IMMEDIATE_PORCH_UPDATE_MODE_HFP ||
 				pdata->panel_info.dfps_update
-				== DFPS_IMMEDIATE_MULTI_UPDATE_MODE_CLK_HFP) {
+				== DFPS_IMMEDIATE_MULTI_UPDATE_MODE_CLK_HFP ||
+				pdata->panel_info.dfps_update
+				== DFPS_IMMEDIATE_MULTI_MODE_HFP_CALC_CLK) {
 			unsigned long flags;
 			if (!ctx->timegen_en) {
 				pr_err("TG is OFF. DFPS mode invalid\n");
@@ -1547,6 +1562,10 @@ static int mdss_mdp_video_display(struct mdss_mdp_ctl *ctl, void *arg)
 	struct mdss_panel_data *pdata = ctl->panel_data;
 	int rc;
 
+#if defined(CONFIG_FB_MSM_MDSS_SAMSUNG)
+	struct samsung_display_driver_data *vdd = samsung_get_vdd();
+#endif
+
 	pr_debug("kickoff ctl=%d\n", ctl->num);
 
 	ctx = (struct mdss_mdp_video_ctx *) ctl->intf_ctx[MASTER_CTX];
@@ -1576,9 +1595,19 @@ static int mdss_mdp_video_display(struct mdss_mdp_ctl *ctl, void *arg)
 			return rc;
 		}
 
+#if defined(CONFIG_FB_MSM_MDSS_SAMSUNG)
+		if (vdd->support_hall_ic)
+			mutex_lock(&vdd->vdd_hall_ic_lock); /* HALL IC switching */
+#endif
+
 		rc = mdss_mdp_ctl_intf_event(ctl, MDSS_EVENT_UNBLANK, NULL,
 			CTL_INTF_EVENT_FLAG_DEFAULT);
 		WARN(rc, "intf %d unblank error (%d)\n", ctl->intf_num, rc);
+
+#if defined(CONFIG_FB_MSM_MDSS_SAMSUNG)
+		if (vdd->support_hall_ic)
+			mutex_unlock(&vdd->vdd_hall_ic_lock); /* HALL IC switching */
+#endif
 
 		pr_debug("enabling timing gen for intf=%d\n", ctl->intf_num);
 
@@ -1614,11 +1643,23 @@ static int mdss_mdp_video_display(struct mdss_mdp_ctl *ctl, void *arg)
 				rc, ctl->num);
 
 		ctx->timegen_en = true;
+
+#if defined(CONFIG_FB_MSM_MDSS_SAMSUNG)
+		if (vdd->support_hall_ic)
+			mutex_lock(&vdd->vdd_hall_ic_lock); /* HALL IC switching */
+#endif
+
 		rc = mdss_mdp_ctl_intf_event(ctl, MDSS_EVENT_PANEL_ON, NULL,
 			CTL_INTF_EVENT_FLAG_DEFAULT);
 		WARN(rc, "intf %d panel on error (%d)\n", ctl->intf_num, rc);
 		mdss_mdp_ctl_intf_event(ctl, MDSS_EVENT_POST_PANEL_ON, NULL,
 			CTL_INTF_EVENT_FLAG_DEFAULT);
+
+#if defined(CONFIG_FB_MSM_MDSS_SAMSUNG)
+		if (vdd->support_hall_ic)
+			mutex_unlock(&vdd->vdd_hall_ic_lock); /* HALL IC switching */
+#endif
+
 	}
 
 	rc = mdss_mdp_video_avr_trigger_setup(ctl);
@@ -1669,8 +1710,13 @@ int mdss_mdp_video_reconfigure_splash_done(struct mdss_mdp_ctl *ctl,
 		ctl->panel_data->next->panel_info.cont_splash_enabled = 0;
 
 	if (!handoff) {
+#if defined(CONFIG_FB_MSM_MDSS_SAMSUNG)
+		ret = mdss_mdp_ctl_intf_event(ctl, MDSS_EVENT_BLANK,
+					      NULL, CTL_INTF_EVENT_FLAG_DEFAULT);
+#else
 		ret = mdss_mdp_ctl_intf_event(ctl, MDSS_EVENT_CONT_SPLASH_BEGIN,
 				      NULL, CTL_INTF_EVENT_FLAG_DEFAULT);
+#endif
 		if (ret) {
 			pr_err("%s: Failed to handle 'CONT_SPLASH_BEGIN' event\n"
 				, __func__);
@@ -1695,9 +1741,15 @@ int mdss_mdp_video_reconfigure_splash_done(struct mdss_mdp_ctl *ctl,
 		/* wait for 1 VSYNC for the pipe to be unstaged */
 		msleep(20);
 
+#if defined(CONFIG_FB_MSM_MDSS_SAMSUNG)
+		ret = mdss_mdp_ctl_intf_event(ctl,
+			MDSS_EVENT_PANEL_OFF, NULL,
+			CTL_INTF_EVENT_FLAG_DEFAULT);
+#else
 		ret = mdss_mdp_ctl_intf_event(ctl,
 			MDSS_EVENT_CONT_SPLASH_FINISH, NULL,
 			CTL_INTF_EVENT_FLAG_DEFAULT);
+#endif
 	}
 
 	return ret;
@@ -1868,6 +1920,9 @@ static int mdss_mdp_video_ctx_setup(struct mdss_mdp_ctl *ctl,
 	ctx->ctl = ctl;
 	ctx->intf_type = ctl->intf_type;
 	init_completion(&ctx->vsync_comp);
+#if defined(CONFIG_FB_MSM_MDSS_SAMSUNG)
+	init_completion(&ctx->pp_comp);
+#endif
 	spin_lock_init(&ctx->vsync_lock);
 	spin_lock_init(&ctx->dfps_lock);
 	mutex_init(&ctx->vsync_mtx);
@@ -1937,6 +1992,13 @@ static int mdss_mdp_video_ctx_setup(struct mdss_mdp_ctl *ctl,
 				mdss_mdp_video_underrun_intr_done, ctl);
 	mdss_mdp_set_intf_intr_callback(ctx, MDSS_MDP_INTF_IRQ_PROG_LINE,
 			mdss_mdp_video_lineptr_intr_done, ctl);
+
+#if defined(CONFIG_FB_MSM_MDSS_SAMSUNG)
+	/*
+	mdss_mdp_set_intr_callback(MDSS_MDP_IRQ_TYPE_PING_PONG_COMP,
+			0, mdss_mdp_video_pingpong_done, ctl);
+	*/
+#endif
 
 	dst_bpp = pinfo->fbc.enabled ? (pinfo->fbc.target_bpp) : (pinfo->bpp);
 
@@ -2299,6 +2361,9 @@ int mdss_mdp_video_start(struct mdss_mdp_ctl *ctl)
 	ctl->ops.early_wake_up_fnc = mdss_mdp_video_early_wake_up;
 	ctl->ops.update_lineptr = mdss_mdp_video_lineptr_ctrl;
 	ctl->ops.avr_ctrl_fnc = mdss_mdp_video_avr_ctrl;
+#if defined(CONFIG_FB_MSM_MDSS_SAMSUNG)
+	ctl->ops.wait_video_pingpong = mdss_mdp_video_wait4pingpong;
+#endif
 
 	return 0;
 }
@@ -2310,3 +2375,75 @@ void *mdss_mdp_get_intf_base_addr(struct mdss_data_type *mdata,
 	ctx = ((struct mdss_mdp_video_ctx *) mdata->video_intf) + interface_id;
 	return (void *)(ctx->base);
 }
+
+#if defined(CONFIG_FB_MSM_MDSS_SAMSUNG)
+void mdss_mdp_video_pingpong_done(void *arg)
+{
+	struct mdss_mdp_ctl *ctl = arg;
+	struct mdss_mdp_video_ctx *ctx;
+
+	ctx = (struct mdss_mdp_video_ctx *) ctl->intf_ctx[MASTER_CTX];
+
+	if (IS_ERR_OR_NULL(ctx)) {
+		pr_err("invalid ctx\n");
+		return;
+	}
+
+	pr_info("intf_num %d\n", ctx->intf_num);
+
+	mdss_mdp_irq_disable_nosync(MDSS_MDP_IRQ_TYPE_PING_PONG_COMP, 0);
+}
+
+static int mdss_mdp_video_wait4pingpong(struct mdss_mdp_ctl *ctl, void *arg)
+{
+	struct mdss_mdp_video_ctx *ctx;
+	int rc = 0;
+
+	ctx = (struct mdss_mdp_video_ctx *) ctl->intf_ctx[MASTER_CTX];
+
+	if (IS_ERR_OR_NULL(ctx)) {
+		pr_err("invalid ctx\n");
+		return -ENODEV;
+	}
+
+	pr_info("intf_num %d\n", ctx->intf_num);
+
+	reinit_completion(&ctx->pp_comp);
+
+	mdss_mdp_irq_enable(MDSS_MDP_IRQ_TYPE_PING_PONG_COMP, 0);
+
+	rc = wait_for_completion_timeout(
+		&ctx->pp_comp, msecs_to_jiffies(20));
+
+	return rc;
+}
+
+void samsung_timing_engine_control(int enable)
+{
+	struct mdss_data_type *mdata = mdss_mdp_get_mdata();
+	struct mdss_mdp_ctl *ctl = mdata->ctl_off;
+	struct mdss_mdp_video_ctx *ctx = NULL;
+
+	if (!IS_ERR_OR_NULL(ctl))
+		ctx = ctl->intf_ctx[MASTER_CTX];
+	else
+		pr_err("%s ctl is NULL\n", __func__);
+
+	if (!IS_ERR_OR_NULL(ctx)) {
+		/*
+			Turning off timing-generator shuld be done by vsync_comp to block sudden display crack.
+		     	But, We don't need to wait vsync. samsung_timing_engine_control(false) is executed at mdss_dsi_panel_off()
+		*/
+#if 0
+		if (!enable)
+			mdss_mdp_video_dfps_wait4vsync(ctl); /* wait vsync to turn off timing-generator */
+#endif
+
+		mdp_video_write(ctx, MDSS_MDP_REG_INTF_TIMING_ENGINE_EN, enable);
+
+		if (!enable)
+			msleep(20); /* wait 1frame. Timing-generator is double buffer */
+	} else
+		pr_err("%s ctx is NULL\n", __func__);
+}
+#endif

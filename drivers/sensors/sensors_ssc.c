@@ -27,6 +27,7 @@
 #include <linux/delay.h>
 #include <linux/sysfs.h>
 #include <soc/qcom/subsystem_restart.h>
+#include <soc/qcom/socinfo.h>
 
 #define IMAGE_LOAD_CMD 1
 #define IMAGE_UNLOAD_CMD 0
@@ -71,6 +72,12 @@ static void slpi_loader_do(struct platform_device *pdev)
 	struct slpi_loader_private *priv = NULL;
 	int ret;
 	const char *firmware_name = NULL;
+#if defined(CONFIG_SEC_DREAMQLTE_PROJECT) || \
+	defined(CONFIG_SEC_DREAM2QLTE_PROJECT) || \
+	defined(CONFIG_SEC_BAIKALQLTE_PROJECT) || \
+	defined(CONFIG_SEC_CRUISERLTE_PROJECT)
+	uint32_t msm_version;
+#endif
 
 	if (!pdev) {
 		dev_err(&pdev->dev, "%s: Platform device null\n", __func__);
@@ -97,7 +104,24 @@ static void slpi_loader_do(struct platform_device *pdev)
 		goto fail;
 	}
 
+#if defined(CONFIG_SEC_DREAMQLTE_PROJECT) || \
+	defined(CONFIG_SEC_DREAM2QLTE_PROJECT) || \
+	defined(CONFIG_SEC_BAIKALQLTE_PROJECT) || \
+	defined(CONFIG_SEC_CRUISERLTE_PROJECT)
+	msm_version = socinfo_get_version();
+	pr_info("%s: msm version(0x%x) for SLPI image\n",
+		__func__, msm_version);
+
+	if (msm_version > 0x10000) {
+		priv->pil_h = subsystem_get("slpi");
+		pr_info("%s: slpi for 1M\n", __func__);
+	} else {
+		priv->pil_h = subsystem_get_with_fwname("slpi", "slpi_512");
+		pr_info("%s: slpi for 512k\n", __func__);
+	}
+#else
 	priv->pil_h = subsystem_get_with_fwname("slpi", firmware_name);
+#endif
 	if (IS_ERR(priv->pil_h)) {
 		dev_err(&pdev->dev, "%s: pil get failed,\n",
 			__func__);
@@ -133,17 +157,30 @@ static ssize_t slpi_boot_store(struct kobject *kobj,
 	size_t count)
 {
 	int boot = 0;
+	static int prev_state;
 
-	if (sscanf(buf, "%du", &boot) != 1)
-		return -EINVAL;
+	if (sscanf(buf, "%10du", &boot) != 1) {
+		pr_err("%s: invalid value (%d)\n", __func__, boot);
+		return count;
+	}
+
+	if (prev_state == boot) {
+		pr_info("%s: boot value is same as prev_state\n", __func__);
+		return count;
+	}
 
 	if (boot == IMAGE_LOAD_CMD) {
+		prev_state = boot;
 		pr_debug("%s: going to call slpi_loader_do\n", __func__);
 		slpi_loader_do(slpi_private);
 	} else if (boot == IMAGE_UNLOAD_CMD) {
+		prev_state = boot;
 		pr_debug("%s: going to call slpi_unloader\n", __func__);
 		slpi_loader_unload(slpi_private);
+	} else {
+		pr_err("%s: invalid value (%d)\n", __func__, boot);
 	}
+
 	return count;
 }
 
@@ -235,6 +272,7 @@ static int slpi_loader_remove(struct platform_device *pdev)
 static u32 sns_read_qtimer(void)
 {
 	u64 val;
+
 	val = arch_counter_get_cntvct();
 	/*
 	 * To convert ticks from 19.2 Mhz clock to 32768 Hz clock:

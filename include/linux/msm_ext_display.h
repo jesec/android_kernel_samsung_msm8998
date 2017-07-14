@@ -1,6 +1,6 @@
 /* include/linux/msm_ext_display.h
  *
- * Copyright (c) 2014-2016 The Linux Foundation. All rights reserved.
+ * Copyright (c) 2014-2017, The Linux Foundation. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -20,6 +20,15 @@
 #define AUDIO_ACK_SET_ENABLE BIT(5)
 #define AUDIO_ACK_ENABLE BIT(4)
 #define AUDIO_ACK_CONNECT BIT(0)
+
+/**
+ *  Flags to be used with the HPD operation of the external display
+ *  interface:
+ *  MSM_EXT_DISP_HPD_AUDIO: audio will be routed to external display
+ *  MSM_EXT_DISP_HPD_VIDEO: video will be routed to external display
+ */
+#define MSM_EXT_DISP_HPD_AUDIO BIT(0)
+#define MSM_EXT_DISP_HPD_VIDEO BIT(1)
 
 /**
  * struct ext_disp_cable_notify - cable notify handler structure
@@ -87,11 +96,16 @@ enum msm_ext_disp_power_state {
 struct msm_ext_disp_intf_ops {
 	int (*hpd)(struct platform_device *pdev,
 			enum msm_ext_disp_type type,
-			enum msm_ext_disp_cable_state state);
+			enum msm_ext_disp_cable_state state,
+			u32 flags);
 	int (*notify)(struct platform_device *pdev,
 			enum msm_ext_disp_cable_state state);
 	int (*ack)(struct platform_device *pdev,
 			u32 ack);
+#ifdef CONFIG_SEC_DISPLAYPORT
+	void (*set_audio_ch)(struct platform_device *pdev,
+			int ch);
+#endif
 };
 
 /**

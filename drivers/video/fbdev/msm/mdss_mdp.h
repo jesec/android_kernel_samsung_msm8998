@@ -22,6 +22,7 @@
 #include <linux/notifier.h>
 #include <linux/irqreturn.h>
 #include <linux/kref.h>
+#include <linux/kthread.h>
 
 #include "mdss.h"
 #include "mdss_mdp_hwio.h"
@@ -56,7 +57,11 @@
 #define C0_G_Y		0	/* G/luma */
 
 /* wait for at most 2 vsync for lowest refresh rate (24hz) */
+#if defined(CONFIG_FB_MSM_MDSS_SAMSUNG)
+#define KOFF_TIMEOUT_MS 1000
+#else
 #define KOFF_TIMEOUT_MS 84
+#endif
 #define KOFF_TIMEOUT msecs_to_jiffies(KOFF_TIMEOUT_MS)
 
 #define OVERFETCH_DISABLE_TOP		BIT(0)
@@ -239,6 +244,8 @@ enum mdss_mdp_csc_type {
 	MDSS_MDP_CSC_YUV2RGB_709L,
 	MDSS_MDP_CSC_YUV2RGB_2020L,
 	MDSS_MDP_CSC_YUV2RGB_2020FR,
+	MDSS_MDP_CSC_YUV2RGB_P3L,
+	MDSS_MDP_CSC_YUV2RGB_P3FR,	
 	MDSS_MDP_CSC_RGB2YUV_601L,
 	MDSS_MDP_CSC_RGB2YUV_601FR,
 	MDSS_MDP_CSC_RGB2YUV_709L,
@@ -418,6 +425,9 @@ struct mdss_mdp_ctl_intfs_ops {
 	/* to update lineptr, [1..yres] - enable, 0 - disable */
 	int (*update_lineptr)(struct mdss_mdp_ctl *ctl, bool enable);
 	int (*avr_ctrl_fnc)(struct mdss_mdp_ctl *, bool enable);
+#if defined(CONFIG_FB_MSM_MDSS_SAMSUNG)
+	int (*wait_video_pingpong) (struct mdss_mdp_ctl *ctl, void *arg);
+#endif
 };
 
 struct mdss_mdp_cwb {
@@ -550,6 +560,7 @@ struct mdss_mdp_ctl {
 	/* dynamic resolution switch during cont-splash handoff */
 	bool switch_with_handoff;
 	struct mdss_mdp_avr_info avr_info;
+	bool commit_in_progress;
 };
 
 struct mdss_mdp_mixer {
@@ -931,7 +942,6 @@ struct mdss_overlay_private {
 
 	struct sw_sync_timeline *vsync_timeline;
 	struct mdss_mdp_vsync_handler vsync_retire_handler;
-	struct work_struct retire_work;
 	int retire_cnt;
 	bool kickoff_released;
 	u32 cursor_ndx[2];
@@ -943,6 +953,11 @@ struct mdss_overlay_private {
 	struct mdss_mdp_cwb cwb;
 	wait_queue_head_t wb_waitq;
 	atomic_t wb_busy;
+	bool allow_kickoff;
+
+	struct kthread_worker worker;
+	struct kthread_work vsync_work;
+	struct task_struct *thread;
 };
 
 struct mdss_mdp_set_ot_params {
@@ -1437,6 +1452,10 @@ static inline uint8_t pp_vig_csc_pipe_val(struct mdss_mdp_pipe *pipe)
 		return MDSS_MDP_CSC_YUV2RGB_2020L;
 	case MDP_CSC_ITU_R_2020_FR:
 		return MDSS_MDP_CSC_YUV2RGB_2020FR;
+	case MDP_CSC_ITU_R_P3:
+		return MDSS_MDP_CSC_YUV2RGB_P3L;
+	case MDP_CSC_ITU_R_P3_FR:
+		return MDSS_MDP_CSC_YUV2RGB_P3FR;		
 	case MDP_CSC_ITU_R_709:
 	default:
 		return  MDSS_MDP_CSC_YUV2RGB_709L;
@@ -1590,7 +1609,7 @@ u32 mdss_mdp_get_irq_mask(u32 intr_type, u32 intf_num);
 
 void mdss_mdp_footswitch_ctrl_splash(int on);
 void mdss_mdp_batfet_ctrl(struct mdss_data_type *mdata, int enable);
-void mdss_mdp_set_clk_rate(unsigned long min_clk_rate);
+void mdss_mdp_set_clk_rate(unsigned long min_clk_rate, bool locked);
 unsigned long mdss_mdp_get_clk_rate(u32 clk_idx, bool locked);
 int mdss_mdp_vsync_clk_enable(int enable, bool locked);
 void mdss_mdp_clk_ctrl(int enable);
@@ -1932,6 +1951,10 @@ bool mdss_mdp_is_wb_mdp_intf(u32 num, u32 reg_index);
 struct mdss_mdp_writeback *mdss_mdp_wb_assign(u32 id, u32 reg_index);
 struct mdss_mdp_writeback *mdss_mdp_wb_alloc(u32 caps, u32 reg_index);
 void mdss_mdp_wb_free(struct mdss_mdp_writeback *wb);
+
+#if defined(CONFIG_FB_MSM_MDSS_SAMSUNG)
+void samsung_timing_engine_control(int enable);
+#endif
 
 void mdss_mdp_ctl_dsc_setup(struct mdss_mdp_ctl *ctl,
 	struct mdss_panel_info *pinfo);

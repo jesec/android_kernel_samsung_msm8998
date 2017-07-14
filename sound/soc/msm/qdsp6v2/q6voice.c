@@ -28,6 +28,10 @@
 #include "q6voice.h"
 #include <sound/adsp_err.h>
 
+#ifdef CONFIG_SEC_SND_ADAPTATION
+#include <sound/sec_adaptation.h>
+#endif /* CONFIG_SEC_SND_ADAPTATION */
+
 #define TIMEOUT_MS 300
 
 
@@ -123,6 +127,13 @@ static int voice_send_get_sound_focus_cmd(struct voice_data *v,
 				struct sound_focus_param *soundFocusData);
 static int voice_send_get_source_tracking_cmd(struct voice_data *v,
 			struct source_tracking_param *sourceTrackingData);
+
+#ifdef CONFIG_SEC_SND_ADAPTATION
+struct common_data* voice_get_common_data(void)
+{
+	return &common;
+}
+#endif /* CONFIG_SEC_SND_ADAPTATION */
 
 static void voice_itr_init(struct voice_session_itr *itr,
 			   u32 session_id)
@@ -5831,7 +5842,9 @@ int voc_end_voice_call(uint32_t session_id)
 
 	if (v->voc_state == VOC_RUN || v->voc_state == VOC_ERROR ||
 	    v->voc_state == VOC_CHANGE || v->voc_state == VOC_STANDBY) {
-
+#ifdef CONFIG_SEC_SND_ADAPTATION
+		voice_sec_loopback_end_cmd(session_id);
+#endif /* CONFIG_SEC_SND_ADAPTATION */
 		pr_debug("%s: VOC_STATE: %d\n", __func__, v->voc_state);
 
 		ret = voice_destroy_vocproc(v);
@@ -6165,7 +6178,9 @@ int voc_start_voice_call(uint32_t session_id)
 			pr_err("start voice failed\n");
 			goto fail;
 		}
-
+#ifdef CONFIG_SEC_SND_ADAPTATION
+		voice_sec_loopback_start_cmd(session_id);
+#endif /* CONFIG_SEC_SND_ADAPTATION */
 		v->voc_state = VOC_RUN;
 	} else {
 		pr_err("%s: Error: Start voice called in state %d\n",

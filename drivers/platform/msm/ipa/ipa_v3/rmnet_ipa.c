@@ -1137,8 +1137,9 @@ send:
 	dev->stats.tx_bytes += skb->len;
 	ret = NETDEV_TX_OK;
 out:
-	ipa_rm_inactivity_timer_release_resource(
-		IPA_RM_RESOURCE_WWAN_0_PROD);
+	if (atomic_read(&wwan_ptr->outstanding_pkts) == 0)
+		ipa_rm_inactivity_timer_release_resource(
+			IPA_RM_RESOURCE_WWAN_0_PROD);
 	return ret;
 }
 
@@ -1189,10 +1190,12 @@ static void apps_ipa_tx_complete_notify(void *priv,
 				wwan_ptr->outstanding_low);
 		netif_wake_queue(wwan_ptr->net);
 	}
+
+	if (atomic_read(&wwan_ptr->outstanding_pkts) == 0)
+		ipa_rm_inactivity_timer_release_resource(
+			IPA_RM_RESOURCE_WWAN_0_PROD);
 	__netif_tx_unlock_bh(netdev_get_tx_queue(dev, 0));
 	dev_kfree_skb_any(skb);
-	ipa_rm_inactivity_timer_release_resource(
-		IPA_RM_RESOURCE_WWAN_0_PROD);
 }
 
 /**
@@ -2306,32 +2309,37 @@ static int rmnet_ipa_ap_suspend(struct device *dev)
 {
 	struct net_device *netdev = IPA_NETDEV();
 	struct ipa3_wwan_private *wwan_ptr;
+	int ret = 0;
 
 	IPAWANDBG_LOW("Enter...\n");
 	if (netdev == NULL) {
 		IPAWANERR("netdev is NULL.\n");
-		return 0;
+		goto bail;
 	}
 
+	netif_tx_lock_bh(netdev);
 	wwan_ptr = netdev_priv(netdev);
 	if (wwan_ptr == NULL) {
 		IPAWANERR("wwan_ptr is NULL.\n");
-		return 0;
+		goto unlock_and_bail;
 	}
 
 	/* Do not allow A7 to suspend in case there are oustanding packets */
 	if (atomic_read(&wwan_ptr->outstanding_pkts) != 0) {
 		IPAWANDBG("Outstanding packets, postponing AP suspend.\n");
-		return -EAGAIN;
+		ret = -EAGAIN;
+		goto unlock_and_bail;
 	}
 
 	/* Make sure that there is no Tx operation ongoing */
-	netif_tx_lock_bh(netdev);
+	netif_stop_queue(netdev);
 	ipa_rm_release_resource(IPA_RM_RESOURCE_WWAN_0_PROD);
-	netif_tx_unlock_bh(netdev);
-	IPAWANDBG_LOW("Exit\n");
 
-	return 0;
+unlock_and_bail:
+	netif_tx_unlock_bh(netdev);
+bail:
+	IPAWANDBG_LOW("Exit with %d\n", ret);
+	return ret;
 }
 
 /**
@@ -2655,6 +2663,23 @@ int rmnet_ipa3_set_tether_client_pipe(
 	struct wan_ioctl_set_tether_client_pipe *data)
 {
 	int number, i;
+
+	/* error checking if ul_src_pipe_len valid or not*/
+	if (data->ul_src_pipe_len > QMI_IPA_MAX_PIPES_V01 ||
+		data->ul_src_pipe_len < 0) {
+		IPAWANERR("UL src pipes %d exceeding max %d\n",
+			data->ul_src_pipe_len,
+			QMI_IPA_MAX_PIPES_V01);
+		return -EFAULT;
+	}
+	/* error checking if dl_dst_pipe_len valid or not*/
+	if (data->dl_dst_pipe_len > QMI_IPA_MAX_PIPES_V01 ||
+		data->dl_dst_pipe_len < 0) {
+		IPAWANERR("DL dst pipes %d exceeding max %d\n",
+			data->dl_dst_pipe_len,
+			QMI_IPA_MAX_PIPES_V01);
+		return -EFAULT;
+	}
 
 	IPAWANDBG("client %d, UL %d, DL %d, reset %d\n",
 	data->ipa_client,

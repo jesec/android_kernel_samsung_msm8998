@@ -32,6 +32,10 @@
 #include <linux/moduleparam.h>
 #include <linux/wakeup_reason.h>
 
+#ifdef CONFIG_SEC_BSP
+#include <linux/sec_bsp.h>
+#endif
+
 #include "power.h"
 
 const char *pm_labels[] = { "mem", "standby", "freeze", NULL };
@@ -503,15 +507,20 @@ static int enter_state(suspend_state_t state)
 
 	if (state == PM_SUSPEND_FREEZE)
 		freeze_begin();
-
+	sec_suspend_resume_add("Syncing FS+");
 #ifndef CONFIG_SUSPEND_SKIP_SYNC
 	trace_suspend_resume(TPS("sync_filesystems"), 0, true);
 	printk(KERN_INFO "PM: Syncing filesystems ... ");
-	sys_sync();
+	if (intr_sync(NULL)) {
+		printk("canceled.\n");
+		trace_suspend_resume(TPS("sync_filesystems"), 0, false);
+		error = -EBUSY;
+		goto Unlock;
+	}
 	printk("done.\n");
 	trace_suspend_resume(TPS("sync_filesystems"), 0, false);
 #endif
-
+	sec_suspend_resume_add("Syncing FS-");
 	pr_debug("PM: Preparing system for sleep (%s)\n", pm_states[state]);
 	pm_suspend_clear_flags();
 	error = suspend_prepare(state);

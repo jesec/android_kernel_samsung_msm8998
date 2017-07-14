@@ -165,6 +165,14 @@ struct wcd9xxx_ocp_setting {
 #define WCD9XXX_VDD_SPKDRV_NAME "cdc-vdd-spkdrv"
 #define WCD9XXX_VDD_SPKDRV2_NAME "cdc-vdd-spkdrv-2"
 
+#define MAX_IMPEDANCE_TALBE 8
+
+struct wcd9xxx_gain_table {
+	uint32_t min;      /* Min impedance */
+	uint32_t max;      /* Max impedance */
+	int gain;   /* additional gain */
+};
+
 struct wcd9xxx_regulator {
 	const char *name;
 	int min_uV;
@@ -192,6 +200,7 @@ struct wcd9xxx_pdata {
 	u32 ecpp_dmic_sample_rate;
 	u32 dmic_clk_drv;
 	u16 use_pinctrl;
+	struct wcd9xxx_gain_table imp_table[MAX_IMPEDANCE_TALBE];
 };
 
 #endif

@@ -27,6 +27,7 @@
 #include <linux/anon_inodes.h>
 
 #include "sync.h"
+#include <linux/spinlock.h>
 
 #define CREATE_TRACE_POINTS
 #include "trace/sync.h"
@@ -390,8 +391,13 @@ int sync_fence_wait(struct sync_fence *fence, long timeout)
 		return ret;
 	} else if (ret == 0) {
 		if (timeout) {
+#if defined(CONFIG_SAMSUNG_PRODUCT_SHIP)
 			pr_info("fence timeout on [%pK] after %dms\n", fence,
 				jiffies_to_msecs(timeout));
+#else
+			pr_info("fence timeout on [%p] after %dms\n", fence,
+				jiffies_to_msecs(timeout));
+#endif
 			sync_dump();
 		}
 		return -ETIME;
@@ -399,7 +405,11 @@ int sync_fence_wait(struct sync_fence *fence, long timeout)
 
 	ret = atomic_read(&fence->status);
 	if (ret) {
+#if defined(CONFIG_SAMSUNG_PRODUCT_SHIP)
 		pr_info("fence error %ld on [%pK]\n", ret, fence);
+#else
+		pr_info("fence error %ld on [%p]\n", ret, fence);
+#endif
 		sync_dump();
 	}
 	return ret;
@@ -528,9 +538,14 @@ static void sync_fence_free(struct kref *kref)
 {
 	struct sync_fence *fence = container_of(kref, struct sync_fence, kref);
 	int i;
+	unsigned long flags;
 
 	for (i = 0; i < fence->num_fences; ++i) {
-		fence_remove_callback(fence->cbs[i].sync_pt, &fence->cbs[i].cb);
+		spin_lock_irqsave(fence->cbs[i].sync_pt->lock, flags);
+		if (atomic_read(&fence->status))
+			fence_remove_callback_locked(fence->cbs[i].sync_pt,
+					      &fence->cbs[i].cb);
+		spin_unlock_irqrestore(fence->cbs[i].sync_pt->lock, flags);
 		fence_put(fence->cbs[i].sync_pt);
 	}
 

@@ -43,6 +43,12 @@
 #include <asm/system_misc.h>
 #include <asm/esr.h>
 #include <asm/edac.h>
+#ifdef CONFIG_SEC_DEBUG
+#include <linux/qcom/sec_debug.h>
+#endif
+#ifdef CONFIG_SEC_DEBUG_SUMMARY
+#include <linux/qcom/sec_debug_summary.h>
+#endif
 
 #include <trace/events/exception.h>
 
@@ -58,13 +64,12 @@ int show_unhandled_signals = 1;
 /*
  * Dump out the contents of some memory nicely...
  */
-static void dump_mem(const char *lvl, const char *str, unsigned long bottom,
-		     unsigned long top, bool compat)
+ static void dump_mem(const char *lvl, const char *str, unsigned long bottom,
+		     unsigned long top)
 {
 	unsigned long first;
 	mm_segment_t fs;
 	int i;
-	unsigned int width = compat ? 4 : 8;
 
 	/*
 	 * We need to switch to kernel mode so that we can use __get_user
@@ -83,22 +88,13 @@ static void dump_mem(const char *lvl, const char *str, unsigned long bottom,
 		memset(str, ' ', sizeof(str));
 		str[sizeof(str) - 1] = '\0';
 
-		for (p = first, i = 0; i < (32 / width)
-					&& p < top; i++, p += width) {
+		for (p = first, i = 0; i < 8 && p < top; i++, p += 4) {
 			if (p >= bottom && p < top) {
-				unsigned long val;
-
-				if (width == 8) {
-					if (__get_user(val, (unsigned long *)p) == 0)
-						sprintf(str + i * 17, " %016lx", val);
-					else
-						sprintf(str + i * 17, " ????????????????");
-				} else {
-					if (__get_user(val, (unsigned int *)p) == 0)
-						sprintf(str + i * 9, " %08lx", val);
-					else
-						sprintf(str + i * 9, " ????????");
-				}
+				unsigned int val;
+				if (__get_user(val, (unsigned int *)p) == 0)
+					sprintf(str + i * 9, " %08x", val);
+				else
+					sprintf(str + i * 9, " ????????");
 			}
 		}
 		printk("%s%04lx:%s\n", lvl, first & 0xffff, str);
@@ -107,13 +103,41 @@ static void dump_mem(const char *lvl, const char *str, unsigned long bottom,
 	set_fs(fs);
 }
 
-static void dump_backtrace_entry(unsigned long where)
+static void dump_backtrace_entry(unsigned long where, unsigned long stack)
 {
-	/*
-	 * Note that 'where' can have a physical address, but it's not handled.
-	 */
 	print_ip_sym(where);
+	if (in_exception_text(where))
+		dump_mem("", "Exception stack", stack,
+			 stack + sizeof(struct pt_regs));
 }
+
+#ifdef CONFIG_USER_RESET_DEBUG
+void sec_debug_backtrace(void)
+{
+	static int once = 0;
+	struct stackframe frame;
+	int skip_callstack = 0;
+
+	if (!once++) {
+		frame.fp = (unsigned long)__builtin_frame_address(0);
+		frame.sp = current_stack_pointer;
+		frame.pc = (unsigned long)sec_debug_backtrace;
+
+		while (1) {
+			int ret;
+
+			ret = unwind_frame(current, &frame);
+			if (ret < 0)
+				break;
+
+			if (skip_callstack++ > 3) {
+				_sec_debug_store_backtrace(frame.pc);
+			}
+		}
+	}
+}
+EXPORT_SYMBOL(sec_debug_backtrace);
+#endif
 
 static void dump_instr(const char *lvl, struct pt_regs *regs)
 {
@@ -192,7 +216,7 @@ static void dump_backtrace(struct pt_regs *regs, struct task_struct *tsk)
 
 		/* skip until specified stack frame */
 		if (!skip) {
-			dump_backtrace_entry(where);
+			where = frame.pc;
 		} else if (frame.fp == regs->regs[29]) {
 			skip = 0;
 			/*
@@ -202,7 +226,7 @@ static void dump_backtrace(struct pt_regs *regs, struct task_struct *tsk)
 			 * at which an exception has taken place, use regs->pc
 			 * instead.
 			 */
-			dump_backtrace_entry(regs->pc);
+			where = regs->pc;
 		}
 		ret = unwind_frame(tsk, &frame);
 		if (ret < 0)
@@ -220,8 +244,9 @@ static void dump_backtrace(struct pt_regs *regs, struct task_struct *tsk)
 				stack = IRQ_STACK_TO_TASK_STACK(irq_stack_ptr);
 
 			dump_mem("", "Exception stack", stack,
-				 stack + sizeof(struct pt_regs), false);
+				 stack + sizeof(struct pt_regs));
 		}
+		dump_backtrace_entry(where, stack);
 	}
 }
 
@@ -259,6 +284,17 @@ static int __die(const char *str, int err, struct thread_info *thread,
 		 TASK_COMM_LEN, tsk->comm, task_pid_nr(tsk), thread + 1);
 
 	if (!user_mode(regs) || in_interrupt()) {
+#ifdef CONFIG_SEC_DEBUG
+		if (THREAD_SIZE + (unsigned long)task_stack_page(tsk) - regs->sp
+			> THREAD_SIZE) {
+			dump_mem(KERN_EMERG, "Stack: ", regs->sp,
+					THREAD_SIZE/4 + regs->sp);
+		} else {
+			dump_mem(KERN_EMERG, "Stack: ", regs->sp,
+					THREAD_SIZE + (unsigned long)task_stack_page(tsk));
+		}
+#endif
+
 		dump_backtrace(regs, tsk);
 		dump_instr(KERN_EMERG, regs);
 	}
@@ -276,6 +312,9 @@ static unsigned long oops_begin(void)
 	unsigned long flags;
 
 	oops_enter();
+#ifdef CONFIG_SEC_DEBUG
+	secdbg_sched_msg("!!die!!");
+#endif
 
 	/* racy, but better than risking deadlock. */
 	raw_local_irq_save(flags);
@@ -330,6 +369,10 @@ void die(const char *str, struct pt_regs *regs, int err)
 		bug_type = report_bug(regs->pc, regs);
 	if (bug_type != BUG_TRAP_TYPE_NONE)
 		str = "Oops - BUG";
+
+#ifdef CONFIG_SEC_DEBUG_SUMMARY
+	sec_debug_save_die_info(str, regs);
+#endif
 
 	ret = __die(str, err, thread, regs);
 

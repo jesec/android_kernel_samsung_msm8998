@@ -149,15 +149,21 @@ static void sync_print_fence(struct seq_file *s, struct sync_fence *fence)
 	unsigned long flags;
 	int i;
 
+#if defined(CONFIG_SAMSUNG_PRODUCT_SHIP)
 	seq_printf(s, "[%pK] %s: %s\n", fence, fence->name,
 		   sync_status_str(atomic_read(&fence->status)));
+#else
+	seq_printf(s, "[%p] %s: %s\n", fence, fence->name,
+		   sync_status_str(atomic_read(&fence->status)));
+#endif
 
 	for (i = 0; i < fence->num_fences; ++i) {
 		struct sync_pt *pt =
 			container_of(fence->cbs[i].sync_pt,
 				     struct sync_pt, base);
-
+		spin_lock_irqsave(pt->base.lock, flags);
 		sync_print_pt(s, pt, true);
+		spin_unlock_irqrestore(pt->base.lock, flags);
 	}
 
 	spin_lock_irqsave(&fence->wq.lock, flags);

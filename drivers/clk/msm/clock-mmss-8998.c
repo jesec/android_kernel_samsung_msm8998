@@ -1,4 +1,4 @@
-/* Copyright (c) 2016, The Linux Foundation. All rights reserved.
+/* Copyright (c) 2016-2017, The Linux Foundation. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -240,7 +240,7 @@ static struct rcg_clk ahb_clk_src = {
 	.set_rate = set_rate_hid,
 	.freq_tbl = ftbl_ahb_clk_src,
 	.current_freq = &rcg_dummy_freq,
-	.non_local_control_timeout = 1000,
+	.non_local_children = true,
 	.base = &virt_base,
 	.c = {
 		.dbg_name = "ahb_clk_src",
@@ -263,6 +263,7 @@ static struct clk_freq_tbl ftbl_csi_clk_src[] = {
 static struct clk_freq_tbl ftbl_csi_clk_src_vq[] = {
 	F_MM( 164571429, mmpll10_pll_out,  3.5,    0,     0),
 	F_MM( 256000000,  mmpll4_pll_out,    3,    0,     0),
+	F_MM( 274290000,  mmpll7_pll_out,  3.5,    0,     0),
 	F_MM( 300000000,    mmsscc_gpll0,    2,    0,     0),
 	F_MM( 384000000,  mmpll4_pll_out,    2,    0,     0),
 	F_MM( 576000000, mmpll10_pll_out,    1,    0,     0),
@@ -527,6 +528,7 @@ static struct clk_freq_tbl ftbl_csiphy_clk_src[] = {
 static struct clk_freq_tbl ftbl_csiphy_clk_src_vq[] = {
 	F_MM(  164570000,  mmpll10_pll_out, 3.5,    0,     0),
 	F_MM(  256000000,   mmpll4_pll_out,   3,    0,     0),
+	F_MM(  274290000,   mmpll7_pll_out, 3.5,    0,     0),
 	F_MM(  300000000,     mmsscc_gpll0,   2,    0,     0),
 	F_MM(  384000000,   mmpll4_pll_out,   2,    0,     0),
 	F_END
@@ -866,7 +868,7 @@ static struct clk_freq_tbl ftbl_mclk_clk_src[] = {
 	F_MM(   9600000,	mmsscc_xo,    2,    0,     0),
 	F_MM(  16666667, mmsscc_gpll0_div,    2,    1,     9),
 	F_MM(  19200000,	mmsscc_xo,    1,    0,     0),
-	F_MM(  24000000, mmsscc_gpll0_div,    1,    2,    25),
+	F_MM(  24000000, mmsscc_gpll0,        1,    1,    25),
 	F_MM(  33333333, mmsscc_gpll0_div,    1,    1,     9),
 	F_MM(  48000000,     mmsscc_gpll0,    1,    2,    25),
 	F_MM(  66666667,     mmsscc_gpll0,    1,    1,     9),

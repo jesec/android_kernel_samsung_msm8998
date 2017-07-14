@@ -21,6 +21,7 @@
 		interrupt-controller;
 		#interrupt-cells = <1>;
 		vdd-supply = <&gdsc_mdss>;
+		gdsc-core-supply = <&gdsc_bimc_smmu>;
 
 		/* Bus Scale Settings */
 		qcom,msm-bus,name = "mdss_mdp";
@@ -374,8 +375,6 @@
 
 			qcom,timing-db-mode;
 			wqhd-vddio-supply = <&pm8998_l14>;
-			lab-supply = <&lab_regulator>;
-			ibb-supply = <&ibb_regulator>;
 			qcom,mdss-mdp = <&mdss_mdp>;
 			qcom,mdss-fb-map = <&mdss_fb0>;
 
@@ -412,8 +411,6 @@
 
 			qcom,timing-db-mode;
 			wqhd-vddio-supply = <&pm8998_l14>;
-			lab-supply = <&lab_regulator>;
-			ibb-supply = <&ibb_regulator>;
 			qcom,mdss-mdp = <&mdss_mdp>;
 			qcom,mdss-fb-map = <&mdss_fb0>;
 

@@ -620,8 +620,14 @@ static int dm_blk_ioctl(struct block_device *bdev, fmode_t mode,
 		if (r)
 			goto out;
 	}
-
-	r =  __blkdev_driver_ioctl(tgt_bdev, mode, cmd, arg);
+	if(!strcmp(tgt->type->name , "dirty") && 
+	          (tgt->type->ioctl         ) && 
+	          (cmd == 1                 )){
+		r = tgt->type->ioctl(tgt, cmd, arg);
+	}else{
+		r =  __blkdev_driver_ioctl(tgt_bdev, mode, cmd, arg);
+	}
+	
 out:
 	dm_put_live_table(md, srcu_idx);
 	return r;
@@ -2133,7 +2139,18 @@ static void dm_request_fn(struct request_queue *q)
 		tio = tio_from_request(rq);
 		/* Establish tio->ti before queuing work (map_tio_request) */
 		tio->ti = ti;
+#ifdef CONFIG_DM_NOT_USE_KDMWORKER
+		spin_unlock(q->queue_lock);
+		if (map_request(tio, rq, md) == DM_MAPIO_REQUEUE) {
+			dm_requeue_original_request(md, rq);
+			spin_lock(q->queue_lock);
+			BUG_ON(!irqs_disabled());
+			goto delay_and_out;
+		}
+		spin_lock(q->queue_lock);
+#else
 		queue_kthread_work(&md->kworker, &tio->work);
+#endif
 		BUG_ON(!irqs_disabled());
 	}
 
@@ -2628,7 +2645,9 @@ static int dm_init_request_based_queue(struct mapped_device *md)
 	blk_queue_softirq_done(md->queue, dm_softirq_done);
 	blk_queue_prep_rq(md->queue, dm_prep_fn);
 
+#ifndef CONFIG_DM_NOT_USE_KDMWORKER
 	init_rq_based_worker_thread(md);
+#endif
 
 	elv_register_queue(md->queue);
 

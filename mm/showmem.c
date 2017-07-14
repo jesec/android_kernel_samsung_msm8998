@@ -29,6 +29,17 @@ int show_mem_notifier_unregister(struct notifier_block *nb)
 	return  atomic_notifier_chain_unregister(&show_mem_notifier, nb);
 }
 
+/**
+ * show_mem_call_notifiers_simple - Call show_mem notifiers to print out extra memory information
+ * @s: seq_file into which print log out, if Null print to kernel log buffer
+ */
+void show_mem_call_notifiers_simple(struct seq_file *s)
+{
+	atomic_notifier_call_chain(&show_mem_notifier, 1, s);
+	if (s == NULL)
+		printk("\n");
+}
+
 void show_mem_call_notifiers(void)
 {
 	atomic_notifier_call_chain(&show_mem_notifier, 0, NULL);

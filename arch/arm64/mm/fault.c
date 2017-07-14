@@ -39,8 +39,10 @@
 #include <asm/pgtable.h>
 #include <asm/tlbflush.h>
 #include <asm/edac.h>
+#include <soc/qcom/scm.h>
 
 #include <trace/events/exception.h>
+#include <linux/qcom/sec_debug.h>
 
 static const char *fault_name(unsigned int esr);
 
@@ -55,9 +57,14 @@ void show_pte(struct mm_struct *mm, unsigned long addr)
 		mm = &init_mm;
 
 	pr_alert("pgd = %p\n", mm->pgd);
+
+	sec_debug_store_pte((unsigned long)mm->pgd, 0);
+
 	pgd = pgd_offset(mm, addr);
 	pr_alert("[%08lx] *pgd=%016llx", addr, pgd_val(*pgd));
 
+	sec_debug_store_pte((unsigned long)addr, 1);
+	sec_debug_store_pte((unsigned long)pgd_val(*pgd), 2);
 	do {
 		pud_t *pud;
 		pmd_t *pmd;
@@ -68,16 +75,19 @@ void show_pte(struct mm_struct *mm, unsigned long addr)
 
 		pud = pud_offset(pgd, addr);
 		printk(", *pud=%016llx", pud_val(*pud));
+		sec_debug_store_pte((unsigned long)pud_val(*pud), 3);
 		if (pud_none(*pud) || pud_bad(*pud))
 			break;
 
 		pmd = pmd_offset(pud, addr);
 		printk(", *pmd=%016llx", pmd_val(*pmd));
+		sec_debug_store_pte((unsigned long)pmd_val(*pmd), 4);
 		if (pmd_none(*pmd) || pmd_bad(*pmd))
 			break;
 
 		pte = pte_offset_map(pmd, addr);
 		printk(", *pte=%016llx", pte_val(*pte));
+		sec_debug_store_pte((unsigned long)pte_val(*pte), 5);
 		pte_unmap(pte);
 	} while(0);
 
@@ -289,14 +299,6 @@ static int __kprobes do_page_fault(unsigned long addr, unsigned int esr,
 		mm_flags |= FAULT_FLAG_WRITE;
 	}
 
-	if (permission_fault(esr) && (addr < USER_DS)) {
-		if (get_fs() == KERNEL_DS)
-			die("Accessing user space memory with fs=KERNEL_DS", regs, esr);
-
-		if (!search_exception_tables(regs->pc))
-			die("Accessing user space memory outside uaccess.h routines", regs, esr);
-	}
-
 	/*
 	 * As per x86, we may deadlock here. However, since the kernel only
 	 * validly references user space from well defined areas of the code,
@@ -409,6 +411,19 @@ no_context:
 }
 
 /*
+ * TLB conflict is already handled in EL2. This rourtine should return zero
+ * so that, do_mem_abort would not crash kernel thinking TLB conflict not
+ * handled.
+*/
+#ifdef CONFIG_QCOM_TLB_EL2_HANDLER
+static int do_tlb_conf_fault(unsigned long addr,
+				unsigned int esr,
+				struct pt_regs *regs)
+{
+	return 0;
+}
+#endif
+/*
  * First Level Translation Fault Handler
  *
  * We enter here because the first level page table doesn't contain a valid
@@ -499,7 +514,11 @@ static struct fault_info {
 	{ do_bad,		SIGBUS,  0,		"unknown 45"			},
 	{ do_bad,		SIGBUS,  0,		"unknown 46"			},
 	{ do_bad,		SIGBUS,  0,		"unknown 47"			},
+#ifdef CONFIG_QCOM_TLB_EL2_HANDLER
+	{ do_tlb_conf_fault,	SIGBUS,  0,		"TLB conflict abort"		},
+#else
 	{ do_bad,		SIGBUS,  0,		"TLB conflict abort"		},
+#endif
 	{ do_bad,		SIGBUS,  0,		"unknown 49"			},
 	{ do_bad,		SIGBUS,  0,		"unknown 50"			},
 	{ do_bad,		SIGBUS,  0,		"unknown 51"			},

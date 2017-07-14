@@ -18,11 +18,16 @@
 #include <linux/kthread.h>
 #include <linux/sched.h>
 #include <linux/sched/rt.h>
+#include <linux/tracepoint.h>
 
 #include <trace/events/sched.h>
 
 #define MAX_CPUS_PER_CLUSTER 4
 #define MAX_CLUSTERS 2
+
+#define ATRACE_END(name) trace_perf_stat(current->tgid, name, 0)
+#define ATRACE_BEGIN(name) trace_perf_stat(current->tgid, name, 1)
+#define ATRACE_INT(name, level) trace_perf_level(current->tgid, name, level)
 
 struct cluster_data {
 	bool inited;
@@ -549,6 +554,7 @@ static bool eval_need(struct cluster_data *cluster)
 	bool need_flag = false;
 	unsigned int active_cpus;
 	unsigned int new_need;
+	char ctl_stat[200] = {0};
 
 	if (unlikely(!cluster->inited))
 		return 0;
@@ -589,6 +595,10 @@ static bool eval_need(struct cluster_data *cluster)
 		ret = elapsed >= cluster->offline_delay_ms;
 	}
 
+	snprintf(ctl_stat, 199, "cpu:%u, last_need:%u, need_cpus:%u, updated:%u\n", cluster->first_cpu, last_need, need_cpus, ret && need_flag);
+	ATRACE_BEGIN(ctl_stat);
+	ATRACE_END(ctl_stat);
+
 	trace_core_ctl_eval_need(cluster->first_cpu, last_need, need_cpus,
 				 ret && need_flag);
 	spin_unlock_irqrestore(&state_lock, flags);
@@ -607,6 +617,7 @@ static int core_ctl_set_busy(unsigned int cpu, unsigned int busy)
 	struct cpu_data *c = &per_cpu(cpu_state, cpu);
 	struct cluster_data *cluster = c->cluster;
 	unsigned int old_is_busy = c->is_busy;
+	char ctl_stat[200] = {0};
 
 	if (!cluster || !cluster->inited)
 		return 0;
@@ -618,6 +629,9 @@ static int core_ctl_set_busy(unsigned int cpu, unsigned int busy)
 	cluster->nrrun_changed = false;
 
 	apply_need(cluster);
+	snprintf(ctl_stat, 199, "cpu:%u, nr_run:%d, busy:%u, is_busy:%u\n", cpu, cluster->nrrun, busy, c->is_busy);
+	ATRACE_BEGIN(ctl_stat);
+	ATRACE_END(ctl_stat);
 	trace_core_ctl_set_busy(cpu, busy, old_is_busy, c->is_busy);
 	return 0;
 }
@@ -856,6 +870,7 @@ static void __ref do_core_ctl(struct cluster_data *cluster)
 			try_to_isolate(cluster, need);
 		else if (cluster->active_cpus < need)
 			try_to_unisolate(cluster, need);
+		ATRACE_INT("do_core_ctl", need);
 	}
 }
 

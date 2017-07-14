@@ -45,6 +45,9 @@
 #include <asm/mmu_context.h>
 
 #include "mm.h"
+#ifdef CONFIG_RELOCATABLE_KERNEL
+#include <soc/qcom/secure_buffer.h>
+#endif
 
 u64 idmap_t0sz = TCR_T0SZ(VA_BITS);
 
@@ -101,6 +104,29 @@ static phys_addr_t __init early_pgtable_alloc(void)
 	return phys;
 }
 
+#ifdef CONFIG_RELOCATABLE_KERNEL
+#define VMID_HLOS	0x3
+#define VMID_HYP	0x4
+#define PERM_READ	0x4
+#define PERM_WRITE	0x2
+
+int rkp_assign_mem_to_hyp(phys_addr_t addr, size_t size)
+{
+	int ret;
+	int srcVM[1] = {VMID_HLOS};
+	int destVM[1] = {VMID_HYP};	// 4
+	int destVMperm[1] = {PERM_READ | PERM_WRITE};
+
+	ret = hyp_assign_phys(addr, size, srcVM, 1, destVM, destVMperm, 1);
+	if (ret) {
+		printk("RKP %s: failed for %pa address of size %zx - rc:%d\n",
+			__func__, &addr, size, ret);
+	} else {
+		printk("RKP successfully assigned memory to hyp\n");
+	}
+	return ret;
+}
+#endif
 /*
  * remap a PMD into pages
  */
@@ -503,7 +529,11 @@ static void __init map_kernel(pgd_t *pgd)
 {
 	static struct vm_struct vmlinux_text, vmlinux_rodata, vmlinux_init, vmlinux_data;
 
+#ifdef	CONFIG_RELOCATABLE_KERNEL
+	map_kernel_segment(pgd, (void *)(KIMAGE_VADDR+0x80000), __start_rodata, PAGE_KERNEL_EXEC, &vmlinux_text);
+#else
 	map_kernel_segment(pgd, _text, __start_rodata, PAGE_KERNEL_EXEC, &vmlinux_text);
+#endif
 	map_kernel_segment(pgd, __start_rodata, _etext, PAGE_KERNEL, &vmlinux_rodata);
 	map_kernel_segment(pgd, __init_begin, __init_end, PAGE_KERNEL_EXEC,
 			   &vmlinux_init);

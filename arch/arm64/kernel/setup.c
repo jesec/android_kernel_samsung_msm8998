@@ -64,12 +64,24 @@
 #include <asm/efi.h>
 #include <asm/xen/hypervisor.h>
 #include <asm/mmu_context.h>
+#ifdef CONFIG_SEC_DEBUG
+#include <linux/qcom/sec_debug.h>
+#endif
+
+// [ SEC_SELINUX_PORTING_QUALCOMM
+#ifdef CONFIG_PROC_AVC
+#include <linux/proc_avc.h>
+#endif
+// ] SEC_SELINUX_PORTING_QUALCOMM
 
 unsigned int boot_reason;
 EXPORT_SYMBOL(boot_reason);
 
 unsigned int cold_boot;
 EXPORT_SYMBOL(cold_boot);
+
+unsigned int system_rev;
+EXPORT_SYMBOL(system_rev);
 
 phys_addr_t __fdt_pointer __initdata;
 
@@ -207,6 +219,14 @@ static void __init setup_machine_fdt(phys_addr_t dt_phys)
 		pr_info("Machine: %s\n", machine_name);
 	}
 }
+
+static int __init msm_hw_rev_setup(char *p)
+{
+	system_rev = memparse(p, NULL);
+	printk("androidboot.revision %x", system_rev);
+	return 0;
+}
+early_param("androidboot.revision", msm_hw_rev_setup);
 
 static void __init request_standard_resources(void)
 {
@@ -369,16 +389,27 @@ void __init setup_arch(char **cmdline_p)
 #endif
 #endif
 	init_random_pool();
+#ifndef CONFIG_RELOCATABLE_KERNEL
 	if (boot_args[1] || boot_args[2] || boot_args[3]) {
 		pr_err("WARNING: x1-x3 nonzero in violation of boot protocol:\n"
 			"\tx1: %016llx\n\tx2: %016llx\n\tx3: %016llx\n"
 			"This indicates a broken bootloader or old kernel\n",
 			boot_args[1], boot_args[2], boot_args[3]);
 	}
+#endif
 }
 
 static int __init arm64_device_init(void)
 {
+#ifdef CONFIG_SEC_DEBUG
+	sec_debug_init();
+#endif
+// [ SEC_SELINUX_PORTING_QUALCOMM
+#ifdef CONFIG_PROC_AVC
+        sec_avc_log_init();
+#endif
+// ] SEC_SELINUX_PORTING_QUALCOMM
+
 	if (of_have_populated_dt()) {
 		of_iommu_init();
 		of_platform_populate(NULL, of_default_bus_match_table,

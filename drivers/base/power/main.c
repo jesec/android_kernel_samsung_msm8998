@@ -60,6 +60,10 @@ struct suspend_stats suspend_stats;
 static DEFINE_MUTEX(dpm_list_mtx);
 static pm_message_t pm_transition;
 
+#ifdef CONFIG_SEC_PM
+extern int wakeup_irq_flag;
+#endif
+
 static int async_error;
 
 static char *pm_verb(int event)
@@ -612,6 +616,10 @@ static int device_resume_early(struct device *dev, pm_message_t state, bool asyn
 
 	TRACE_DEVICE(dev);
 	TRACE_RESUME(0);
+
+#ifdef CONFIG_SEC_PM
+    wakeup_irq_flag = 0;
+#endif
 
 	if (dev->power.syscore || dev->power.direct_complete)
 		goto Out;
@@ -1372,6 +1380,10 @@ static int __device_suspend(struct device *dev, pm_message_t state, bool async)
 		pm_wakeup_event(dev, 0);
 
 	if (pm_wakeup_pending()) {
+		if (!strcmp(dev->kobj.name, "phy-1da7000.ufsphy.0")) { 
+			dev_warn(dev, "phy-1da7000.ufsphy.0 enter pm_wakeup_pending & pm_runtime_status[%d]%s!\n", 
+					pm_runtime_status_suspended(dev),__func__); 
+		} 
 		pm_get_active_wakeup_sources(suspend_abort,
 			MAX_SUSPEND_ABORT_LEN);
 		log_suspend_abort_reason(suspend_abort);
@@ -1381,6 +1393,7 @@ static int __device_suspend(struct device *dev, pm_message_t state, bool async)
 
 	if (dev->power.syscore)
 		goto Complete;
+
 
 	if (dev->power.direct_complete) {
 		if (pm_runtime_status_suspended(dev)) {

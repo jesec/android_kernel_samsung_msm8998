@@ -37,9 +37,9 @@ static void derive_crypt_complete(struct crypto_async_request *req, int rc)
  *
  * Return: Zero on success; non-zero otherwise.
  */
-static int ext4_derive_key_aes(char deriving_key[EXT4_AES_128_ECB_KEY_SIZE],
-			       char source_key[EXT4_AES_256_XTS_KEY_SIZE],
-			       char derived_key[EXT4_AES_256_XTS_KEY_SIZE])
+int ext4_derive_key_aes(char deriving_key[EXT4_AES_128_ECB_KEY_SIZE],
+			char source_key[EXT4_AES_256_XTS_KEY_SIZE],
+			char derived_key[EXT4_AES_256_XTS_KEY_SIZE])
 {
 	int res = 0;
 	struct ablkcipher_request *req = NULL;
@@ -116,6 +116,15 @@ static int ext4_default_data_encryption_mode(void)
 {
 	return ext4_is_ice_enabled() ? EXT4_ENCRYPTION_MODE_PRIVATE :
 		EXT4_ENCRYPTION_MODE_AES_256_XTS;
+}
+
+static inline int __ext4_get_fek(char *nonce, char *src_key, char *fe_key)
+{
+#ifdef CONFIG_EXT4_SEC_CRYPTO_EXTENSION
+	return ext4_sec_get_key_aes(nonce, src_key, fe_key);
+#else
+	return ext4_derive_key_aes(nonce, src_key, fe_key);
+#endif
 }
 
 int _ext4_get_encryption_info(struct inode *inode)
@@ -213,6 +222,11 @@ retry:
 			    (2 * EXT4_KEY_DESCRIPTOR_SIZE)] = '\0';
 	keyring_key = request_key(&key_type_logon, full_key_descriptor, NULL);
 	if (IS_ERR(keyring_key)) {
+		static unsigned long int rate = 0;
+		/* print error message per one sec */
+		if (printk_timed_ratelimit(&rate, 1000))
+			printk(KERN_WARNING "ext4: error get keyring! (%s)\n",
+			full_key_descriptor);
 		res = PTR_ERR(keyring_key);
 		keyring_key = NULL;
 		goto out;
@@ -220,7 +234,7 @@ retry:
 	crypt_info->ci_keyring_key = keyring_key;
 	if (keyring_key->type != &key_type_logon) {
 		printk_once(KERN_WARNING
-			    "ext4: key type must be logon\n");
+			     "ext4: key type must be logon\n");
 		res = -ENOKEY;
 		goto out;
 	}
@@ -232,7 +246,7 @@ retry:
 		goto out;
 	}
 	master_key = (struct ext4_encryption_key *)ukp->data;
-	BUILD_BUG_ON(EXT4_AES_128_ECB_KEY_SIZE !=
+	BUILD_BUG_ON(EXT4_ESTIMATED_NONCE_SIZE !=
 		     EXT4_KEY_DERIVATION_NONCE_SIZE);
 	if (master_key->size != EXT4_AES_256_XTS_KEY_SIZE) {
 		printk_once(KERN_WARNING
@@ -242,8 +256,7 @@ retry:
 		up_read(&keyring_key->sem);
 		goto out;
 	}
-	res = ext4_derive_key_aes(ctx.nonce, master_key->raw,
-				  crypt_info->ci_raw_key);
+	res = __ext4_get_fek(ctx.nonce, master_key->raw, crypt_info->ci_raw_key);
 	up_read(&keyring_key->sem);
 	if (res)
 		goto out;

@@ -1,4 +1,4 @@
-/* Copyright (c) 2015-2016, The Linux Foundation. All rights reserved.
+/* Copyright (c) 2015-2017, The Linux Foundation. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -58,6 +58,9 @@ Rotation request flag
 
 /* use client provided dma buf instead of ion fd */
 #define SDE_ROTATION_EXT_DMA_BUF	0x20000
+
+/* secure camera operation*/
+#define SDE_ROTATION_SECURE_CAMERA	0x40000
 
 /**********************************************************************
 configuration structures
@@ -410,14 +413,20 @@ void sde_rotator_remove_request(struct sde_rot_mgr *mgr,
 	struct sde_rot_file_private *private,
 	struct sde_rot_entry_container *req);
 
-int sde_rotator_verify_config(struct sde_rot_mgr *rot_dev,
+int sde_rotator_verify_config_all(struct sde_rot_mgr *rot_dev,
+	struct sde_rotation_config *config);
+
+int sde_rotator_verify_config_input(struct sde_rot_mgr *rot_dev,
+	struct sde_rotation_config *config);
+
+int sde_rotator_verify_config_output(struct sde_rot_mgr *rot_dev,
 	struct sde_rotation_config *config);
 
 int sde_rotator_validate_request(struct sde_rot_mgr *rot_dev,
 	struct sde_rot_file_private *ctx,
 	struct sde_rot_entry_container *req);
 
-int sde_rotator_clk_ctrl(struct sde_rot_mgr *mgr, int enable);
+int sde_rotator_clk_ctrl(struct sde_rot_mgr *mgr, int enable);	
 
 static inline void sde_rot_mgr_lock(struct sde_rot_mgr *mgr)
 {

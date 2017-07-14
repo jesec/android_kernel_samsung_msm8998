@@ -127,4 +127,30 @@ config PINCTRL_WCD
 	  This is the pinctrl, pinmux, pinconf and gpiolib driver for the
 	  WCD gpio controller block.
 
+config SENSORS_FP_SPI_GPIO_START
+    depends on SENSORS_FINGERPRINT
+	int "Fingerprint spi gpio number start"
+	default 0
+
+config SENSORS_FP_SPI_GPIO_END
+    depends on SENSORS_FINGERPRINT
+	int "Fingerprint spi gpio number end"
+	default 0
+
+config IRIS_I2C_START
+	int "Iris i2c number start"
+	default 0
+
+config IRIS_I2C_END
+	int "Iris i2c number end"
+	default 0
+
+config IRIS_GPIO_START
+	int "Iris gpio number start"
+	default 0
+
+config IRIS_GPIO_END
+	int "Iris gpio number end"
+	default 0
+
 endif

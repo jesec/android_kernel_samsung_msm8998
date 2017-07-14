@@ -485,6 +485,9 @@ struct fuse_conn {
 	/** Maximum write size */
 	unsigned max_write;
 
+	/** Free space reserve size */
+	unsigned reserved_space_mb;
+
 	/** Input queue */
 	struct fuse_iqueue iq;
 

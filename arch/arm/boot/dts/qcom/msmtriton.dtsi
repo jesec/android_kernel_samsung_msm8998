@@ -701,7 +701,6 @@
 		qcom,pil-self-auth;
 		qcom,sysmon-id = <0>;
 		qcom,ssctl-instance-id = <0x12>;
-		qcom,override-acc;
 		qcom,qdsp6v62-1-5;
 		memory-region = <&modem_fw_mem>;
 		qcom,mem-protect-id = <0xF>;
@@ -787,8 +786,6 @@
 #include "msmfalcon-common.dtsi"
 
 &gdsc_usb30 {
-	clock-names = "core_clk";
-	clocks = <&clock_gcc GCC_USB30_MASTER_CLK>;
 	status = "ok";
 };
 
@@ -837,9 +834,6 @@
 };
 
 &gdsc_mdss {
-	clock-names = "bus_clk", "rot_clk";
-	clocks = <&clock_mmss MMSS_MDSS_AXI_CLK>,
-		 <&clock_mmss MMSS_MDSS_ROT_CLK>;
 	proxy-supply = <&gdsc_mdss>;
 	qcom,proxy-consumer-enable;
 	status = "ok";

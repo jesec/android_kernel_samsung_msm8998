@@ -1,4 +1,4 @@
-/* Copyright (c) 2014-2016, The Linux Foundation. All rights reserved.
+/* Copyright (c) 2014-2017, The Linux Foundation. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -582,6 +582,9 @@ static bool glink_core_remote_close_common(struct channel_ctx *ctx, bool safe)
 	}
 	ctx->rcid = 0;
 
+	ctx->int_req_ack = false;
+	complete_all(&ctx->int_req_ack_complete);
+	complete_all(&ctx->int_req_complete);
 	if (ctx->local_open_state != GLINK_CHANNEL_CLOSED &&
 		ctx->local_open_state != GLINK_CHANNEL_CLOSING) {
 		if (ctx->notify_state)
@@ -598,9 +601,6 @@ static bool glink_core_remote_close_common(struct channel_ctx *ctx, bool safe)
 			"Did not send GLINK_REMOTE_DISCONNECTED",
 			"local state is already CLOSED");
 
-	ctx->int_req_ack = false;
-	complete_all(&ctx->int_req_ack_complete);
-	complete_all(&ctx->int_req_complete);
 	ch_purge_intent_lists(ctx);
 
 	return is_fully_closed;
@@ -5147,7 +5147,7 @@ void glink_core_rx_put_pkt_ctx(struct glink_transport_if *if_ptr,
 		return;
 	}
 
-	GLINK_PERF_CH(ctx, "%s: L[%u]: data[%p] size[%zu]\n",
+	GLINK_INFO_PERF_CH(ctx, "%s: QMCK: L[%u]: data[%p] size[%zu]\n", 
 		__func__, intent_ptr->id,
 		intent_ptr->data ? intent_ptr->data : intent_ptr->iovec,
 		intent_ptr->write_offset);
@@ -5169,11 +5169,13 @@ void glink_core_rx_put_pkt_ctx(struct glink_transport_if *if_ptr,
 
 	ch_set_local_rx_intent_notified(ctx, intent_ptr);
 	if (ctx->notify_rx && (intent_ptr->data || intent_ptr->bounce_buf)) {
+		GLINK_INFO_PERF_CH(ctx, "%s QMCK: now calling notify_rx, intent:%p\n", __func__, intent_ptr); 
 		ctx->notify_rx(ctx, ctx->user_priv, intent_ptr->pkt_priv,
 			       intent_ptr->data ?
 				intent_ptr->data : intent_ptr->bounce_buf,
 			       intent_ptr->pkt_size);
 	} else if (ctx->notify_rxv) {
+		GLINK_INFO_PERF_CH(ctx, "%s QMCK: now calling notify_rxv, intent:%p\n", __func__, intent_ptr); 
 		ctx->notify_rxv(ctx, ctx->user_priv, intent_ptr->pkt_priv,
 				intent_ptr->iovec, intent_ptr->pkt_size,
 				intent_ptr->vprovider, intent_ptr->pprovider);
@@ -6049,12 +6051,15 @@ int glink_get_ch_lintents_queued(struct channel_ctx *ch_ctx)
 {
 	struct glink_core_rx_intent *intent;
 	int ilrx_count = 0;
+	unsigned long flags;
 
 	if (ch_ctx == NULL)
 		return -EINVAL;
 
+	spin_lock_irqsave(&ch_ctx->local_rx_intent_lst_lock_lhc1, flags);
 	list_for_each_entry(intent, &ch_ctx->local_rx_intent_list, list)
 		ilrx_count++;
+	spin_unlock_irqrestore(&ch_ctx->local_rx_intent_lst_lock_lhc1, flags);
 
 	return ilrx_count;
 }
@@ -6071,12 +6076,15 @@ int glink_get_ch_rintents_queued(struct channel_ctx *ch_ctx)
 {
 	struct glink_core_rx_intent *intent;
 	int irrx_count = 0;
+	unsigned long flags;
 
 	if (ch_ctx == NULL)
 		return -EINVAL;
 
+	spin_lock_irqsave(&ch_ctx->rmt_rx_intent_lst_lock_lhc2, flags);
 	list_for_each_entry(intent, &ch_ctx->rmt_rx_intent_list, list)
 		irrx_count++;
+	spin_unlock_irqrestore(&ch_ctx->rmt_rx_intent_lst_lock_lhc2, flags);
 
 	return irrx_count;
 }

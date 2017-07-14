@@ -1,4 +1,4 @@
-/* Copyright (c) 2012-2016, The Linux Foundation. All rights reserved.
+/* Copyright (c) 2012-2017, The Linux Foundation. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -855,12 +855,18 @@ static int __validate_layer_reconfig(struct mdp_input_layer *layer,
 	 */
 	if (pipe->csc_coeff_set != layer->color_space) {
 		src_fmt = mdss_mdp_get_format_params(layer->buffer.format);
-		if (pipe->src_fmt->is_yuv && src_fmt && src_fmt->is_yuv) {
-			status = -EPERM;
-			pr_err("csc change is not permitted on used pipe\n");
+		if (!src_fmt) {
+			pr_err("Invalid layer format %d\n",
+						layer->buffer.format);
+			status = -EINVAL;
+		} else {
+			if (pipe->src_fmt->is_yuv && src_fmt &&
+							src_fmt->is_yuv) {
+				status = -EPERM;
+				pr_err("csc change is not permitted on used pipe\n");
+			}
 		}
 	}
-
 	return status;
 }
 
@@ -1034,7 +1040,6 @@ static int __configure_pipe_params(struct msm_fb_data_type *mfd,
 	if (layer->flags & MDP_LAYER_SECURE_CAMERA_SESSION)
 		pipe->flags |= MDP_SECURE_CAMERA_OVERLAY_SESSION;
 
-	pipe->scaler.enable = (layer->flags & SCALER_ENABLED);
 	pipe->is_fg = layer->flags & MDP_LAYER_FORGROUND;
 	pipe->img_width = layer->buffer.width & 0x3fff;
 	pipe->img_height = layer->buffer.height & 0x3fff;
@@ -1066,6 +1071,16 @@ static int __configure_pipe_params(struct msm_fb_data_type *mfd,
 	pr_debug("pipe:%d src{%d,%d,%d,%d}, dst{%d,%d,%d,%d}\n", pipe->num,
 		pipe->src.x, pipe->src.y, pipe->src.w, pipe->src.h,
 		pipe->dst.x, pipe->dst.y, pipe->dst.w, pipe->dst.h);
+
+	if (layer->flags & SCALER_ENABLED) {
+		memcpy(&pipe->scaler, layer->scale,
+				sizeof(struct mdp_scale_data_v2));
+		/* Sanitize enable flag */
+		pipe->scaler.enable &= (ENABLE_SCALE | ENABLE_DETAIL_ENHANCE |
+				ENABLE_DIRECTION_DETECTION);
+	} else {
+		pipe->scaler.enable = 0;
+	}
 
 	flags = pipe->flags;
 	if (is_single_layer)
@@ -1189,9 +1204,6 @@ static int __configure_pipe_params(struct msm_fb_data_type *mfd,
 		}
 	}
 
-	if (layer->flags & SCALER_ENABLED)
-		memcpy(&pipe->scaler, layer->scale,
-			sizeof(struct mdp_scale_data_v2));
 	ret = mdss_mdp_overlay_setup_scaling(pipe);
 	if (ret) {
 		pr_err("scaling setup failed %d\n", ret);
@@ -1288,6 +1300,9 @@ static struct sync_fence *__create_fence(struct msm_fb_data_type *mfd,
 	if (*fence_fd < 0) {
 		pr_err("%s: get_unused_fd_flags failed error:0x%x\n",
 			fence_name, *fence_fd);
+#if defined(CONFIG_FB_MSM_MDSS_SAMSUNG)
+		sync_dump();
+#endif
 		sync_fence_put(sync_fence);
 		sync_fence = NULL;
 		goto end;
@@ -1672,7 +1687,12 @@ static int __validate_secure_session(struct mdss_overlay_private *mdp5_data)
 	pr_debug("pipe count:: secure display:%d non-secure:%d secure-vid:%d,secure-cam:%d\n",
 		sd_pipes, nonsd_pipes, secure_vid_pipes, secure_cam_pipes);
 
-	if ((sd_pipes || mdss_get_sd_client_cnt()) &&
+	if (mdss_get_sd_client_cnt() && !mdp5_data->sd_enabled) {
+		pr_err("Secure session already enabled for other client\n");
+		return -EINVAL;
+	}
+
+	if ((sd_pipes) &&
 		(nonsd_pipes || secure_vid_pipes ||
 		secure_cam_pipes)) {
 		pr_err("non-secure layer validation request during secure display session\n");
@@ -2724,7 +2744,8 @@ int mdss_mdp_layer_atomic_validate(struct msm_fb_data_type *mfd,
 		return -ENODEV;
 	}
 
-	if (mdss_fb_is_power_off(mfd)) {
+	if (mdss_fb_is_power_off(mfd) ||
+		mdss_fb_is_power_on_ulp(mfd)) {
 		pr_err("display interface is in off state fb:%d\n",
 			mfd->index);
 		return -EPERM;

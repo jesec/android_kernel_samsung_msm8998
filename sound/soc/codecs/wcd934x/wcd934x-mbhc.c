@@ -42,7 +42,7 @@
 /* Z floating defined in ohms */
 #define TAVIL_ZDET_FLOATING_IMPEDANCE 0x0FFFFFFE
 
-#define TAVIL_ZDET_NUM_MEASUREMENTS   150
+#define TAVIL_ZDET_NUM_MEASUREMENTS   250
 #define TAVIL_MBHC_GET_C1(c)          ((c & 0xC000) >> 14)
 #define TAVIL_MBHC_GET_X1(x)          (x & 0x3FFF)
 /* Z value compared in milliOhm */
@@ -126,6 +126,9 @@ static struct wcd_mbhc_register
 			  WCD934X_INTR_PIN1_STATUS0, 0x04, 2, 0),
 	WCD_MBHC_REGISTER("WCD_MBHC_HPHR_OCP_STATUS",
 			  WCD934X_INTR_PIN1_STATUS0, 0x08, 3, 0),
+	/* BCS(button click suppressor) */
+	WCD_MBHC_REGISTER("WCD_MBHC_BCS_EN",
+			  WCD934X_CDC_TX0_TX_PATH_SEC7, 0x60, 6, 0),
 };
 
 static const struct wcd_mbhc_intr intr_ids = {
@@ -567,11 +570,13 @@ static void tavil_wcd_mbhc_calc_impedance(struct wcd_mbhc *mbhc, uint32_t *zl,
 					  uint32_t *zr)
 {
 	struct snd_soc_codec *codec = mbhc->codec;
+	struct wcd9xxx_pdata *pdata = dev_get_platdata(codec->dev->parent);
 	struct wcd9xxx *wcd9xxx = dev_get_drvdata(codec->dev->parent);
 	s16 reg0, reg1, reg2, reg3, reg4;
 	int32_t z1L, z1R, z1Ls;
 	int zMono, z_diff1, z_diff2;
 	bool is_fsm_disable = false;
+	int i;
 	struct tavil_mbhc_zdet_param zdet_param[] = {
 		{4, 0, 4, 0x08, 0x14, 0x18}, /* < 32ohm */
 		{2, 0, 3, 0x18, 0x7C, 0x90}, /* 32ohm < Z < 400ohm */
@@ -643,6 +648,18 @@ left_ch_impedance:
 	}
 	dev_dbg(codec->dev, "%s: impedance on HPH_L = %d(ohms)\n",
 		__func__, *zl);
+
+	/* Samsung impedance detection and additional digital gain */
+	for (i = 0; i < ARRAY_SIZE(pdata->imp_table); i++) {
+		if (*zl >= pdata->imp_table[i].min &&
+			*zl <= pdata->imp_table[i].max) {
+			mbhc->impedance_offset =
+				pdata->imp_table[i].gain;
+			dev_info(codec->dev, "%s: zl = %d, imped offset = %d\n",
+				__func__, *zl, mbhc->impedance_offset);
+			break;
+		}
+	}
 
 	/* Start of right impedance ramp and calculation */
 	tavil_mbhc_zdet_ramp(codec, zdet_param_ptr, NULL, &z1R, d1);

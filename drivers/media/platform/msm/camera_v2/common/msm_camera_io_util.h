@@ -71,6 +71,8 @@ int msm_camera_config_single_vreg(struct device *dev,
 
 int msm_camera_request_gpio_table(struct gpio *gpio_tbl, uint8_t size,
 	int gpio_en);
+int msm_camera_request_s_gpio_table(struct msm_camera_power_ctrl_t *ctrl,
+	int gpio_en, bool shared);
 void msm_camera_io_dump_wstring_base(void __iomem *addr,
 	struct msm_cam_dump_string_info *dump_data,
 	int size);

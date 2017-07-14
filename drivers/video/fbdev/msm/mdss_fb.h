@@ -1,4 +1,4 @@
-/* Copyright (c) 2008-2016, The Linux Foundation. All rights reserved.
+/* Copyright (c) 2008-2017, The Linux Foundation. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -420,6 +420,11 @@ static inline bool mdss_fb_is_power_on_lp(struct msm_fb_data_type *mfd)
 	return mdss_panel_is_power_on_lp(mfd->panel_power_state);
 }
 
+static inline bool mdss_fb_is_power_on_ulp(struct msm_fb_data_type *mfd)
+{
+	return mdss_panel_is_power_on_ulp(mfd->panel_power_state);
+}
+
 static inline bool mdss_fb_is_hdmi_primary(struct msm_fb_data_type *mfd)
 {
 	return (mfd && (mfd->index == 0) &&
@@ -449,4 +454,5 @@ u32 mdss_fb_get_mode_switch(struct msm_fb_data_type *mfd);
 void mdss_fb_report_panel_dead(struct msm_fb_data_type *mfd);
 void mdss_panelinfo_to_fb_var(struct mdss_panel_info *pinfo,
 						struct fb_var_screeninfo *var);
+void mdss_fb_idle_pc(struct msm_fb_data_type *mfd);
 #endif /* MDSS_FB_H */

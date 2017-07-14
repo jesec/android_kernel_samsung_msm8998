@@ -210,10 +210,22 @@ efi_header_end:
 	__INIT
 
 ENTRY(stext)
+#ifdef CONFIG_RELOCATABLE_KERNEL
+	mov	x22, x1				// x1=PHYS_OFFSET
+	mov	x19, x2				// x2=real TEXT_OFFSET
+	adr_l	x21, __boot_kernel_offset
+	stp	x1, x2, [x21]
+#endif
 	bl	preserve_boot_args
 	bl	el2_setup			// Drop to EL1, w20=cpu_boot_mode
+
+#ifndef CONFIG_RELOCATABLE_KERNEL
 	adrp	x24, __PHYS_OFFSET
 	and	x23, x24, MIN_KIMG_ALIGN - 1	// KASLR offset, defaults to 0
+#else
+	mov	x24, x22		// x24 = PHYS_OFFSET
+	sub	x23, x19, TEXT_OFFSET	// x23 hold offset of KASLR
+#endif
 	bl	set_cpu_boot_mode_flag
 	bl	__create_page_tables		// x25=TTBR0, x26=TTBR1
 	/*
@@ -222,11 +234,48 @@ ENTRY(stext)
 	 * On return, the CPU will be ready for the MMU to be turned on and
 	 * the TCR will have been set.
 	 */
+#ifndef CONFIG_RELOCATABLE_KERNEL
 	bl	__cpu_setup			// initialise processor
 	adr_l	x27, __primary_switch		// address to jump to after
 						// MMU has been enabled
 	b	__enable_mmu
+#else
+	bl	__cpu_setup			// initialise processor
+	adr	x27, __relocate_kernel
+	sub	x27, x27, x24
+	mov_q	x12, KIMAGE_VADDR
+	add	x27, x27, x12	// convert to VA
+	b	__enable_mmu
+#endif
 ENDPROC(stext)
+
+#ifdef CONFIG_RELOCATABLE_KERNEL
+__relocate_kernel:
+	ldr	w9, =__rela_offset		// offset to reloc table
+	ldr	w10, =__rela_size		// size of reloc table
+	mov_q	x11, KIMAGE_VADDR		// default virtual offset
+	add	x11, x11, x23			// actual virtual offset
+	add	x9, x9, x11			// __va(.rela)
+	add	x10, x9, x10			// __va(.rela) + sizeof(.rela)
+
+0:	cmp	x9, x10
+	b.hs	1f
+	ldp	x11, x12, [x9], #24
+	cmp	x12, #R_AARCH64_RELATIVE
+	b.ne	0b
+	ldr	x12, [x9, #-8]
+	add	x12, x12, x23			// relocate origin x23
+	str	x12, [x11, x23]
+	b	0b
+
+1:	adr_l	x8, vectors			// reload VBAR_EL1 with
+	msr	vbar_el1, x8			// relocated address
+	isb
+
+	adr_l	x9,  __primary_switched
+	br	x9
+ENDPROC(__relocate_kernel)
+#endif
 
 /*
  * Preserve the arguments passed by the bootloader in x0 .. x3
@@ -441,6 +490,9 @@ __primary_switched:
 
 	ldr_l	x4, kimage_vaddr		// Save the offset between
 	sub	x4, x4, x24			// the kernel virtual and
+#ifdef CONFIG_RELOCATABLE_KERNEL
+	sub	x4, x4, x23
+#endif
 	str_l	x4, kimage_voffset, x5		// physical mappings
 
 	mov	x29, #0
@@ -586,6 +638,15 @@ set_cpu_boot_mode_flag:
 	ret
 ENDPROC(set_cpu_boot_mode_flag)
 
+#ifdef CONFIG_RELOCATABLE_KERNEL
+	.pushsection	.text
+ENTRY(__boot_kernel_offset)
+	.quad	0     	//Kernel Physical Address
+	.quad	0	//Kernel TEXT_OFFSET
+	.quad 	TEXT_OFFSET
+	.popsection
+#endif
+
 /*
  * We need to find out the CPU boot mode long after boot, so we need to
  * store it in a writable variable.
@@ -624,6 +685,10 @@ ENDPROC(secondary_holding_pen)
 	 */
 ENTRY(secondary_entry)
 	bl	el2_setup			// Drop to EL1
+#ifdef 	CONFIG_RELOCATABLE_KERNEL
+	adr 	x22, __boot_kernel_offset
+	ldp	x24, x19, [x22]
+#endif
 	bl	set_cpu_boot_mode_flag
 	b	secondary_startup
 ENDPROC(secondary_entry)
@@ -632,8 +697,13 @@ secondary_startup:
 	/*
 	 * Common entry point for secondary CPUs.
 	 */
+#ifndef CONFIG_RELOCATABLE_KERNEL
 	adrp	x25, idmap_pg_dir
 	adrp	x26, swapper_pg_dir
+#else
+	adr_l	x25, idmap_pg_dir
+	adr_l	x26, swapper_pg_dir
+#endif
 	bl	__cpu_setup			// initialise processor
 
 	adr_l	x27, __secondary_switch		// address to jump to after enabling the MMU

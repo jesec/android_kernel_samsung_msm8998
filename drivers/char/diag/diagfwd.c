@@ -263,7 +263,7 @@ static void pack_rsp_and_send(unsigned char *buf, int len)
 	 * means we did not get a write complete for the previous
 	 * response.
 	 */
-	while (retry_count < UINT_MAX) {
+	while (retry_count < DIAG_MAX_RSP_WAIT_CNT) {
 		if (!driver->rsp_buf_busy)
 			break;
 		/*
@@ -332,7 +332,7 @@ static void encode_rsp_and_send(unsigned char *buf, int len)
 	 * means we did not get a write complete for the previous
 	 * response.
 	 */
-	while (retry_count < UINT_MAX) {
+	while (retry_count < DIAG_MAX_RSP_WAIT_CNT) {
 		if (!driver->rsp_buf_busy)
 			break;
 		/*

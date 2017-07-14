@@ -1312,6 +1312,21 @@ probe_end:
 	return rc;
 }
 
+int msm_send_event(char *sd_name, uint32_t cmd) {
+	int rc = -1;
+	struct msm_sd_subdev *msm_sd;
+	if (!list_empty(&msm_v4l2_dev->subdevs))
+		list_for_each_entry(msm_sd, &ordered_sd_list, list) {
+			if (strcmp(msm_sd->sd.name, sd_name) == 0) {
+				rc = v4l2_subdev_call(&msm_sd->sd, core, ioctl,
+					cmd, NULL);
+				if (rc == 0)
+					return 0;
+			}
+		}
+	return rc;
+}
+
 static const struct of_device_id msm_dt_match[] = {
 	{.compatible = "qcom,msm-cam"},
 	{}

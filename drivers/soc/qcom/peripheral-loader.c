@@ -1,4 +1,4 @@
-/* Copyright (c) 2010-2016, The Linux Foundation. All rights reserved.
+/* Copyright (c) 2010-2017, The Linux Foundation. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -41,6 +41,10 @@
 #include <asm-generic/io-64-nonatomic-lo-hi.h>
 
 #include "peripheral-loader.h"
+
+#ifdef CONFIG_SEC_PERIPHERAL_SECURE_CHK
+#include <linux/qcom/sec_debug.h>
+#endif
 
 #define pil_err(desc, fmt, ...)						\
 	dev_err(desc->dev, "%s: " fmt, desc->name, ##__VA_ARGS__)
@@ -171,7 +175,11 @@ int pil_do_ramdump(struct pil_desc *desc, void *ramdump_dev)
 	ret = do_elf_ramdump(ramdump_dev, ramdump_segs, count);
 	kfree(ramdump_segs);
 
-	if (!ret && desc->subsys_vmid > 0)
+	if (ret)
+		pil_err(desc, "%s: Ramdump collection failed for subsys %s rc:%d\n",
+				__func__, desc->name, ret);
+
+	if (desc->subsys_vmid > 0)
 		ret = pil_assign_mem_to_subsys(desc, priv->region_start,
 				(priv->region_end - priv->region_start));
 
@@ -801,6 +809,33 @@ int pil_boot(struct pil_desc *desc)
 		ret = desc->ops->init_image(desc, fw->data, fw->size);
 	if (ret) {
 		pil_err(desc, "Initializing image failed(rc:%d)\n", ret);
+#ifdef CONFIG_SEC_PERIPHERAL_SECURE_CHK
+		if (ret == -EINVAL && ((!strcmp(desc->name, "mba")) || (!strcmp(desc->name, "modem")))) 	
+		{
+			if (ret && desc->proxy_unvote_irq)
+				disable_irq(desc->proxy_unvote_irq);
+			pil_proxy_unvote(desc, ret);
+			release_firmware(fw);
+			up_read(&pil_pm_rwsem);
+			if (ret) {
+				if (priv->region) {
+					if (desc->subsys_vmid > 0 && !mem_protect &&
+							hyp_assign) {
+						pil_reclaim_mem(desc, priv->region_start,
+								(priv->region_end -
+								 priv->region_start),
+								VMID_HLOS);
+					}
+					dma_free_attrs(desc->dev, priv->region_size,
+							priv->region, priv->region_start,
+							&desc->attrs);
+					priv->region = NULL;
+				}
+				pil_release_mmap(desc);
+			}
+			sec_peripheral_secure_check_fail();
+		}
+#endif
 		goto err_boot;
 	}
 
@@ -858,6 +893,39 @@ int pil_boot(struct pil_desc *desc)
 	ret = desc->ops->auth_and_reset(desc);
 	if (ret) {
 		pil_err(desc, "Failed to bring out of reset(rc:%d)\n", ret);
+#ifdef CONFIG_SEC_PERIPHERAL_SECURE_CHK
+		if (ret == -EINVAL && ((!strcmp(desc->name, "mba")) || (!strcmp(desc->name, "modem")))) {
+			if (ret && desc->subsys_vmid > 0) {
+				pil_assign_mem_to_linux(desc, priv->region_start,
+						(priv->region_end - priv->region_start));
+				mem_protect = true;
+			}
+			if (ret && desc->ops->deinit_image)
+				desc->ops->deinit_image(desc);
+			if (ret && desc->proxy_unvote_irq)
+				disable_irq(desc->proxy_unvote_irq);
+			pil_proxy_unvote(desc, ret);
+			release_firmware(fw);
+			up_read(&pil_pm_rwsem);
+			if (ret) {
+				if (priv->region) {
+					if (desc->subsys_vmid > 0 && !mem_protect &&
+							hyp_assign) {
+						pil_reclaim_mem(desc, priv->region_start,
+								(priv->region_end -
+								 priv->region_start),
+								VMID_HLOS);
+					}
+					dma_free_attrs(desc->dev, priv->region_size,
+							priv->region, priv->region_start,
+							&desc->attrs);
+					priv->region = NULL;
+				}
+				pil_release_mmap(desc);
+			}
+			sec_peripheral_secure_check_fail();
+		}
+#endif	
 		goto err_auth_and_reset;
 	}
 	pil_info(desc, "Brought out of reset\n");

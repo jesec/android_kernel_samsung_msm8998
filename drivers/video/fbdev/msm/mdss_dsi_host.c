@@ -1,4 +1,4 @@
-/* Copyright (c) 2012-2016, The Linux Foundation. All rights reserved.
+/* Copyright (c) 2012-2017, The Linux Foundation. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -29,9 +29,16 @@
 #include "mdss_debug.h"
 #include "mdss_smmu.h"
 #include "mdss_dsi_phy.h"
+#if defined(CONFIG_FB_MSM_MDSS_SAMSUNG)
+#include "samsung/ss_dsi_panel_common.h"
+#endif
 
 #define VSYNC_PERIOD 17
+#if defined(CONFIG_FB_MSM_MDSS_SAMSUNG)
+#define DMA_TX_TIMEOUT 1000
+#else
 #define DMA_TX_TIMEOUT 200
+#endif
 #define DMA_TPG_FIFO_LEN 64
 
 #define FIFO_STATUS	0x0C
@@ -1216,6 +1223,15 @@ void mdss_dsi_dsc_config(struct mdss_dsi_ctrl_pdata *ctrl, struct dsc_desc *dsc)
 {
 	u32 data, offset;
 
+	if (!dsc) {
+		if (ctrl->panel_mode == DSI_VIDEO_MODE)
+			offset = MDSS_DSI_VIDEO_COMPRESSION_MODE_CTRL;
+		else
+			offset = MDSS_DSI_COMMAND_COMPRESSION_MODE_CTRL;
+		MIPI_OUTP((ctrl->ctrl_base) + offset, 0);
+		return;
+	}
+
 	if (dsc->pkt_per_line <= 0) {
 		pr_err("%s: Error: pkt_per_line cannot be negative or 0\n",
 			__func__);
@@ -1403,9 +1419,8 @@ static void mdss_dsi_mode_setup(struct mdss_panel_data *pdata)
 		MIPI_OUTP((ctrl_pdata->ctrl_base) + 0x64, stream_total);
 		MIPI_OUTP((ctrl_pdata->ctrl_base) + 0x5C, stream_total);
 	}
-
-	if (dsc)	/* compressed */
-		mdss_dsi_dsc_config(ctrl_pdata, dsc);
+	MDSS_XLOG(stream_total, stream_ctrl);
+	mdss_dsi_dsc_config(ctrl_pdata, dsc);
 }
 
 void mdss_dsi_ctrl_setup(struct mdss_dsi_ctrl_pdata *ctrl)
@@ -1607,6 +1622,51 @@ static int mdss_dsi_cmd_dma_tpg_tx(struct mdss_dsi_ctrl_pdata *ctrl,
 	return ret;
 }
 
+#if defined(CONFIG_FB_MSM_MDSS_SAMSUNG)
+static void print_cmd_desc(struct mdss_dsi_ctrl_pdata *ctrl,
+		struct dsi_cmd_desc *cmds, int cnt)
+{
+	struct samsung_display_driver_data *vdd = NULL;
+	char buf[1024];
+	int len;
+	int i,j;
+
+	if (IS_ERR_OR_NULL(ctrl))
+		return;
+
+	vdd = check_valid_ctrl(ctrl);
+
+	if (IS_ERR_OR_NULL(vdd))
+		return;
+
+	if (!vdd->debug_data->print_cmds) {
+		LCD_DEBUG("print_cmds is disabled(%s)",
+				vdd->debug_data->print_cmds ? "enabled" : "disabled");
+		return;
+	}
+
+	for (j=0; j < cnt; j++) {
+		len = 0;
+		len += sprintf(buf, "%02x ", cmds[j].dchdr.dtype);
+		len += sprintf(buf + len, "%02x ", cmds[j].dchdr.last);
+		len += sprintf(buf + len, "%02x ", cmds[j].dchdr.vc);
+		len += sprintf(buf + len, "%02x ", cmds[j].dchdr.ack);
+		len += sprintf(buf + len, "%02x ", cmds[j].dchdr.wait);
+		len += sprintf(buf + len, "%02x ", cmds[j].dchdr.dlen);
+
+		for (i = 0; i < cmds[j].dchdr.dlen; i++) {
+			if (i > 200)
+				break;
+			len += sprintf(buf + len, "%02x ", cmds[j].payload[i]);
+		}
+
+		LCD_INFO("(%02d) %s\n", j, buf);
+	}
+
+	return;
+}
+#endif
+
 static int mdss_dsi_cmds2buf_tx(struct mdss_dsi_ctrl_pdata *ctrl,
 			struct dsi_cmd_desc *cmds, int cnt, int use_dma_tpg)
 {
@@ -1619,6 +1679,11 @@ static int mdss_dsi_cmds2buf_tx(struct mdss_dsi_ctrl_pdata *ctrl,
 	mdss_dsi_buf_init(tp);
 	cm = cmds;
 	len = 0;
+
+#if defined(CONFIG_FB_MSM_MDSS_SAMSUNG)
+	print_cmd_desc(ctrl, cmds, cnt);
+#endif
+
 	while (cnt--) {
 		dchdr = &cm->dchdr;
 		mdss_dsi_buf_reserve(tp, len);
@@ -1643,6 +1708,7 @@ static int mdss_dsi_cmds2buf_tx(struct mdss_dsi_ctrl_pdata *ctrl,
 				mdss_dsi_disable_irq(ctrl, DSI_CMD_TERM);
 				pr_err("%s: failed to call cmd_dma_tx for cmd = 0x%x\n",
 					__func__,  cm->payload[0]);
+				MDSS_XLOG(0xb666, 0xbad);
 				return 0;
 			}
 			pr_debug("%s: cmd_dma_tx for cmd = 0x%x, len = %d\n",
@@ -2015,6 +2081,10 @@ static int mdss_dsi_cmd_dma_tx(struct mdss_dsi_ctrl_pdata *ctrl,
 	struct mdss_dsi_ctrl_pdata *mctrl = NULL;
 	int ignored = 0;	/* overflow ignored */
 
+#if defined(CONFIG_FB_MSM_MDSS_SAMSUNG)
+	int retry_cnt;
+#endif
+
 	bp = tp->data;
 
 	len = ALIGN(tp->len, 4);
@@ -2022,8 +2092,28 @@ static int mdss_dsi_cmd_dma_tx(struct mdss_dsi_ctrl_pdata *ctrl,
 
 	ctrl->mdss_util->iommu_lock();
 	if (ctrl->mdss_util->iommu_attached()) {
+		MDSS_XLOG(0xa111);
 		ret = mdss_smmu_dsi_map_buffer(tp->dmap, domain, ctrl->dma_size,
 			&(ctrl->dma_addr), tp->start, DMA_TO_DEVICE);
+
+#if defined(CONFIG_FB_MSM_MDSS_SAMSUNG)
+		if (IS_ERR_VALUE(ret)) {
+			 if (!in_interrupt()) {
+				for (retry_cnt = 0; retry_cnt < 62 ; retry_cnt++) {
+					/* To wait free page by memory reclaim*/
+					msleep(16);
+
+					pr_err("dma map sg failed : retry (%d)\n", retry_cnt);
+					ret = mdss_smmu_dsi_map_buffer(tp->dmap, domain, ctrl->dma_size,
+							&(ctrl->dma_addr), tp->start, DMA_TO_DEVICE);
+
+					if (!IS_ERR_VALUE(ret))
+						break;
+				}
+			}
+		}
+#endif
+
 		if (IS_ERR_VALUE(ret)) {
 			pr_err("unable to map dma memory to iommu(%d)\n", ret);
 			ctrl->mdss_util->iommu_unlock();
@@ -2031,6 +2121,7 @@ static int mdss_dsi_cmd_dma_tx(struct mdss_dsi_ctrl_pdata *ctrl,
 		}
 		ctrl->dmap_iommu_map = true;
 	} else {
+		MDSS_XLOG(0xa222);
 		ctrl->dma_addr = tp->dmap;
 	}
 
@@ -2058,6 +2149,8 @@ static int mdss_dsi_cmd_dma_tx(struct mdss_dsi_ctrl_pdata *ctrl,
 		/* mask out overflow isr */
 		mdss_dsi_set_reg(ctrl, 0x10c, 0x0f0000, 0x0f0000);
 	}
+
+	MDSS_XLOG(ctrl->dma_addr);
 
 	/* send cmd to its panel */
 	MIPI_OUTP((ctrl->ctrl_base) + 0x048, ctrl->dma_addr);
@@ -2093,6 +2186,12 @@ static int mdss_dsi_cmd_dma_tx(struct mdss_dsi_ctrl_pdata *ctrl,
 			pr_warn("%s: dma tx done but irq not triggered\n",
 				__func__);
 		} else {
+#if defined(CONFIG_FB_MSM_MDSS_SAMSUNG)
+			pr_err("%s: dma tx timeout!!\n", __func__);
+			MDSS_XLOG_TOUT_HANDLER("mdp", "dsi0_ctrl", "dsi0_phy",
+					"dsi1_ctrl", "dsi1_phy", "vbif", "vbif_nrt",
+					"dbg_bus", "vbif_dbg_bus", "panic");
+#endif
 			ret = -ETIMEDOUT;
 		}
 	}
@@ -2108,6 +2207,7 @@ static int mdss_dsi_cmd_dma_tx(struct mdss_dsi_ctrl_pdata *ctrl,
 			mdss_dsi_set_reg(mctrl, 0x10c, 0x0f0000, 0);
 		}
 		if (mctrl->dmap_iommu_map) {
+			MDSS_XLOG(0xa333);
 			mdss_smmu_dsi_unmap_buffer(mctrl->dma_addr, domain,
 				mctrl->dma_size, DMA_TO_DEVICE);
 			mctrl->dmap_iommu_map = false;
@@ -2117,6 +2217,7 @@ static int mdss_dsi_cmd_dma_tx(struct mdss_dsi_ctrl_pdata *ctrl,
 	}
 
 	if (ctrl->dmap_iommu_map) {
+		MDSS_XLOG(0xa444);
 		mdss_smmu_dsi_unmap_buffer(ctrl->dma_addr, domain,
 			ctrl->dma_size, DMA_TO_DEVICE);
 		ctrl->dmap_iommu_map = false;
@@ -2142,7 +2243,7 @@ static int mdss_dsi_cmd_dma_rx(struct mdss_dsi_ctrl_pdata *ctrl,
 	u32 *lp, *temp, data;
 	int i, j = 0, off, cnt;
 	bool ack_error = false;
-	char reg[16];
+	char reg[16] = {0x0};
 	int repeated_bytes = 0;
 
 	lp = (u32 *)rp->data;
@@ -2244,6 +2345,8 @@ static int mdss_dsi_bus_bandwidth_vote(struct dsi_shared_data *sdata, bool on)
 		}
 	}
 
+	MDSS_XLOG(0xb111, sdata->bus_refcount, changed, on);
+
 	if (changed) {
 		rc = msm_bus_scale_client_update_request(sdata->bus_handle,
 							 on ? 1 : 0);
@@ -2254,6 +2357,59 @@ static int mdss_dsi_bus_bandwidth_vote(struct dsi_shared_data *sdata, bool on)
 	return rc;
 }
 
+#if defined(CONFIG_FB_MSM_MDSS_SAMSUNG)
+void mdss_dsi_samsung_poc_perf_mode_ctl(struct mdss_dsi_ctrl_pdata *ctrl, int enable)
+{
+	static int pre_enable = 0;
+	int rc = 0;
+
+	if (IS_ERR_OR_NULL(ctrl))
+		return;
+
+	if (enable) {
+		if (pre_enable == false) {
+			mdss_mdp_clk_ctrl(MDP_BLOCK_POWER_ON);
+			mdss_bus_bandwidth_ctrl(true);
+
+			mdss_res->ib_factor.numer = mdss_res->ib_factor.numer << 3;
+			mdss_res->ab_factor.numer = mdss_res->ab_factor.numer << 3;
+
+			rc = mdss_dsi_bus_bandwidth_vote(ctrl->shared_data, true);
+			if (rc) {
+				pr_err("%s: Bus bw vote failed\n", __func__);
+				return ;
+			}
+
+			if (ctrl->mdss_util->iommu_ctrl) {
+				rc = ctrl->mdss_util->iommu_ctrl(1);
+				if (IS_ERR_VALUE(rc)) {
+					pr_err("IOMMU attach failed\n");
+					return ;
+				}
+			}
+			mdss_dsi_clk_ctrl(ctrl, ctrl->dsi_clk_handle, MDSS_DSI_ALL_CLKS,
+				  MDSS_DSI_CLK_ON);
+			pre_enable = true;
+		}
+	}
+	else {
+		if (pre_enable == true) {
+			if (ctrl->mdss_util->iommu_ctrl)
+				ctrl->mdss_util->iommu_ctrl(0);
+
+			mdss_dsi_bus_bandwidth_vote(ctrl->shared_data, false);
+
+			mdss_dsi_clk_ctrl(ctrl, ctrl->dsi_clk_handle, MDSS_DSI_ALL_CLKS,
+				  MDSS_DSI_CLK_OFF);
+			mdss_res->ib_factor.numer = mdss_res->ib_factor.numer >> 3;
+			mdss_res->ab_factor.numer = mdss_res->ab_factor.numer >> 3;
+			mdss_bus_bandwidth_ctrl(false);
+			mdss_mdp_clk_ctrl(MDP_BLOCK_POWER_OFF);
+			pre_enable = false;
+		}
+	}
+}
+#endif
 
 int mdss_dsi_en_wait4dynamic_done(struct mdss_dsi_ctrl_pdata *ctrl)
 {
@@ -2493,7 +2649,11 @@ int mdss_dsi_cmdlist_rx(struct mdss_dsi_ctrl_pdata *ctrl,
 		rp = &ctrl->rx_buf;
 		len = mdss_dsi_cmds_rx(ctrl, req->cmds, req->rlen,
 				(req->flags & CMD_REQ_DMA_TPG));
+#if defined(CONFIG_FB_MSM_MDSS_SAMSUNG)
+		pr_debug("%s skip memcopy to req-buffer from rx buffer", __func__);
+#else
 		memcpy(req->rbuf, rp->data, rp->len);
+#endif
 		ctrl->rx_len = len;
 	} else {
 		pr_err("%s: No rx buffer provided\n", __func__);
@@ -2656,6 +2816,7 @@ int mdss_dsi_cmdlist_commit(struct mdss_dsi_ctrl_pdata *ctrl, int from_mdp)
 				return rc;
 			}
 			use_iommu = true;
+			MDSS_XLOG(0xb222, 0x11, use_iommu);
 		}
 	}
 
@@ -2688,6 +2849,7 @@ int mdss_dsi_cmdlist_commit(struct mdss_dsi_ctrl_pdata *ctrl, int from_mdp)
 		if (use_iommu)
 			ctrl->mdss_util->iommu_ctrl(0);
 
+		MDSS_XLOG(0xb222, 0x22, use_iommu);
 		(void)mdss_dsi_bus_bandwidth_vote(ctrl->shared_data, false);
 	}
 
@@ -3128,6 +3290,11 @@ irqreturn_t mdss_dsi_isr(int irq, void *ptr)
 
 	pr_debug("%s: ndx=%d isr=%x\n", __func__, ctrl->ndx, isr);
 
+	if (isr & DSI_INTR_ERROR) {
+		MDSS_XLOG(ctrl->ndx, ctrl->mdp_busy, isr, 0x97);
+		mdss_dsi_error(ctrl);
+	}
+
 	if (isr & DSI_INTR_BTA_DONE) {
 		MDSS_XLOG(ctrl->ndx, ctrl->mdp_busy, isr, 0x96);
 		spin_lock(&ctrl->mdp_lock);
@@ -3150,11 +3317,6 @@ irqreturn_t mdss_dsi_isr(int irq, void *ptr)
 			mdss_dsi_set_reg(ctrl, 0x0c, 0x44440000, 0x44440000);
 		}
 		spin_unlock(&ctrl->mdp_lock);
-	}
-
-	if (isr & DSI_INTR_ERROR) {
-		MDSS_XLOG(ctrl->ndx, ctrl->mdp_busy, isr, 0x97);
-		mdss_dsi_error(ctrl);
 	}
 
 	if (isr & DSI_INTR_VIDEO_DONE) {

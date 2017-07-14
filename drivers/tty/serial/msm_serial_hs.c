@@ -67,6 +67,14 @@
 #include <linux/platform_data/msm_serial_hs.h>
 #include <linux/msm-bus.h>
 
+#if defined(CONFIG_MUIC_NOTIFIER)
+#include <linux/muic/muic.h>
+#include <linux/muic/muic_notifier.h>
+#endif
+#if defined(CONFIG_CCIC_NOTIFIER)
+#include <linux/ccic/ccic_notifier.h>
+#endif /* CONFIG_CCIC_NOTIFIER */
+
 #include "msm_serial_hs_hwreg.h"
 #define UART_SPS_CONS_PERIPHERAL 0
 #define UART_SPS_PROD_PERIPHERAL 1
@@ -76,6 +84,14 @@
 #define IPC_MSM_HS_LOG_DATA_PAGES 3
 #define UART_DMA_DESC_NR 8
 #define BUF_DUMP_SIZE 32
+#define MAX_LOG_NAME_LEN 20
+
+enum {
+	HS_SERIAL_ID_BT,
+	HS_SERIAL_ID_RESERVE,
+	HS_SERIAL_ID_AT = 8,
+	HS_SERIAL_ID_MAX
+};
 
 /* If the debug_mask gets set to FATAL_LEV,
  * a fatal error has happened and further IPC logging
@@ -260,6 +276,8 @@ struct msm_hs_port {
 	void *ipc_msm_hs_log_ctxt;
 	void *ipc_msm_hs_pwr_ctxt;
 	int ipc_debug_mask;
+	struct notifier_block hs_nb;
+	bool jig_state;
 };
 
 static struct of_device_id msm_hs_match_table[] = {
@@ -295,6 +313,21 @@ static int msm_hs_pm_resume(struct device *dev);
 
 #define UARTDM_TO_MSM(uart_port) \
 	container_of((uart_port), struct msm_hs_port, uport)
+
+#define	ATD_TTY_DEV_MAX	15
+#define ATD_HS_DEV_NAME "/dev/ttyHS8"
+static char atd_tty_dev[ATD_TTY_DEV_MAX];
+static int use_hs_for_at;
+static int __init get_atd_tty_dev(char *str)
+{
+	strlcpy(atd_tty_dev, str, ATD_TTY_DEV_MAX);
+	//pr_info("%s: atd_tty_dev : %s, %s\n", __func__, atd_tty_dev, ATD_HS_DEV_NAME);
+	if (strlen(atd_tty_dev) == strlen(ATD_HS_DEV_NAME) &&
+		!strncmp(atd_tty_dev, ATD_HS_DEV_NAME, strlen(atd_tty_dev)))
+		use_hs_for_at = 1;
+	return 0;
+}
+__setup("androidboot.sec_atd.tty=", get_atd_tty_dev);
 
 static int msm_hs_ioctl(struct uart_port *uport, unsigned int cmd,
 						unsigned long arg)
@@ -345,6 +378,8 @@ static int msm_hs_ioctl(struct uart_port *uport, unsigned int cmd,
 static int msm_hs_clk_bus_vote(struct msm_hs_port *msm_uport)
 {
 	int rc = 0;
+	struct uart_port *uport = &(msm_uport->uport);
+	struct platform_device *pdev = to_platform_device(uport->dev);
 
 	msm_hs_bus_voting(msm_uport, BUS_SCALING);
 	/* Turn on core clk and iface clk */
@@ -364,7 +399,8 @@ static int msm_hs_clk_bus_vote(struct msm_hs_port *msm_uport)
 			__func__, rc);
 		goto core_unprepare;
 	}
-	MSM_HS_DBG("%s: Clock ON successful\n", __func__);
+	//MSM_HS_DBG("%s: Clock ON successful\n", __func__);
+	printk(KERN_INFO "(msm_serial_hs, id %u) HS Uart clock on\n", pdev->id);
 	return rc;
 core_unprepare:
 	clk_disable_unprepare(msm_uport->pclk);
@@ -380,11 +416,15 @@ busreset:
  */
 static void msm_hs_clk_bus_unvote(struct msm_hs_port *msm_uport)
 {
+	struct uart_port *uport = &(msm_uport->uport);
+	struct platform_device *pdev = to_platform_device(uport->dev);
+
 	clk_disable_unprepare(msm_uport->clk);
 	if (msm_uport->pclk)
 		clk_disable_unprepare(msm_uport->pclk);
 	msm_hs_bus_voting(msm_uport, BUS_RESET);
-	MSM_HS_DBG("%s: Clock OFF successful\n", __func__);
+	//MSM_HS_DBG("%s: Clock OFF successful\n", __func__);
+	printk(KERN_INFO "(msm_serial_hs, id %u) HS Uart clock off\n", pdev->id);
 }
 
  /* Remove vote for resources when done */
@@ -411,9 +451,11 @@ static void msm_hs_resource_vote(struct msm_hs_port *msm_uport)
 	struct uart_port *uport = &(msm_uport->uport);
 	ret = pm_runtime_get_sync(uport->dev);
 	if (ret < 0 || msm_uport->pm_state != MSM_HS_PM_ACTIVE) {
-		MSM_HS_WARN("%s:%s runtime callback not invoked ret:%d st:%d",
-			__func__, dev_name(uport->dev), ret,
-					msm_uport->pm_state);
+		if(pm_runtime_enabled(uport->dev)) {
+			MSM_HS_WARN("%s:%s runtime callback not invoked ret:%d st:%d",
+				__func__, dev_name(uport->dev), ret,
+						msm_uport->pm_state);
+		}
 		msm_hs_pm_resume(uport->dev);
 	}
 	atomic_inc(&msm_uport->resource_count);
@@ -528,6 +570,28 @@ static ssize_t set_debug_mask(struct device *dev,
 static DEVICE_ATTR(debug_mask, S_IWUSR | S_IRUGO, show_debug_mask,
 							set_debug_mask);
 
+static ssize_t show_uart_error_cnt(struct device *dev, struct device_attribute *attr, char *buf) 
+{ 
+ ssize_t ret = 0; 
+ struct platform_device *pdev = container_of(dev, struct platform_device, dev); 
+ struct msm_hs_port *msm_uport = get_matching_hs_port(pdev); 
+ struct uart_port *uport; 
+ sprintf(buf, "000 000 000 000\n");//init buf : overrun parity frame break count
+ 
+ uport = &msm_uport->uport; 
+ 
+ /* This check should not fail */ 
+ if (uport) 
+ {
+ 	ret = sprintf(buf,"%03x %03x %03x %03x\n", uport->icount.buf_overrun, uport->icount.parity, 0, uport->icount.brk); 
+ }
+
+ return ret; 
+} 
+ 
+static DEVICE_ATTR(error_cnt, S_IRUGO, show_uart_error_cnt, NULL); 
+
+
 static inline bool is_use_low_power_wakeup(struct msm_hs_port *msm_uport)
 {
 	return msm_uport->wakeup.irq > 0;
@@ -590,9 +654,15 @@ static void hex_dump_ipc(struct msm_hs_port *msm_uport, void *ipc_ctx,
 	 * Print upto 32 data bytes, 32 bytes per line, 1 byte at a time and
 	 * don't include the ASCII text at the end of the buffer.
 	 */
-	hex_dump_to_buffer(string, len, 32, 1, buf, sizeof(buf), false);
-	ipc_log_string(ipc_ctx, "%s[0x%.10x:%d] : %s", prefix,
-					(unsigned int)addr, size, buf);
+	if (msm_uport->ipc_debug_mask < DBG_LEV) {
+		hex_dump_to_buffer(string, len, 32, 1, buf, sizeof(buf), false);
+		ipc_log_string(ipc_ctx, "%s[0x%.10x:%d] : %s", prefix,
+						(unsigned int)addr, size, buf);
+	} else {
+ 		hex_dump_to_buffer(string, len, 16, 1, buf, sizeof(buf), true);
+		ipc_log_string(ipc_ctx, "%s[0x%.10x:%d] : %s", prefix,
+						(unsigned int)addr, size, buf);
+	}
 }
 
 /*
@@ -721,6 +791,7 @@ static int msm_hs_remove(struct platform_device *pdev)
 	dev = msm_uport->uport.dev;
 	sysfs_remove_file(&pdev->dev.kobj, &dev_attr_clock.attr);
 	sysfs_remove_file(&pdev->dev.kobj, &dev_attr_debug_mask.attr);
+	sysfs_remove_file(&pdev->dev.kobj, &dev_attr_error_cnt.attr);
 	debugfs_remove(msm_uport->loopback_dir);
 
 	dma_free_coherent(msm_uport->uport.dev,
@@ -1422,6 +1493,8 @@ static void msm_hs_submit_tx_locked(struct uart_port *uport)
 	if (tx_count > left)
 		tx_count = left;
 
+	//printk("[BT] tx %02x %02x %02x %02x\n", tx_buf->buf[tx_buf->tail], tx_buf->buf[tx_buf->tail+1], tx_buf->buf[tx_buf->tail+2], tx_buf->buf[tx_buf->tail+3]);
+  
 	src_addr = tx->dma_base + tx_buf->tail;
 	/* Mask the src_addr to align on a cache
 	 * and add those bytes to tx_count */
@@ -1732,15 +1805,13 @@ static void msm_serial_hs_rx_work(struct kthread_work *work)
 		}
 
 		if (unlikely(status & UARTDM_SR_RX_BREAK_BMSK)) {
-			MSM_HS_DBG("msm_serial_hs: Rx break\n");
+			MSM_HS_INFO("msm_serial_hs: Rx break\n");
 			uport->icount.brk++;
 			error_f = 1;
 			if (!(uport->ignore_status_mask & IGNBRK)) {
-				retval = tty_insert_flip_char(tty->port,
-								0, TTY_BREAK);
-				if (!retval)
-					msm_uport->rx.buffer_pending
-								|= TTY_BREAK;
+				 retval = tty_insert_flip_char(tty->port, 0, TTY_BREAK);
+				 if (!retval)
+					msm_uport->rx.buffer_pending|= TTY_BREAK;
 			}
 		}
 
@@ -1762,6 +1833,8 @@ static void msm_serial_hs_rx_work(struct kthread_work *work)
 			(msm_uport->rx.rx_inx * UARTDM_RX_BUF_SIZE)),
 			msm_uport->rx.iovec[msm_uport->rx.rx_inx].addr,
 			rx_count);
+
+		//printk("[BT] rx %02x %02x %02x %02x\n", msm_uport->rx.buffer[msm_uport->rx.rx_inx * UARTDM_RX_BUF_SIZE], msm_uport->rx.buffer[msm_uport->rx.rx_inx * UARTDM_RX_BUF_SIZE+1],  msm_uport->rx.buffer[msm_uport->rx.rx_inx * UARTDM_RX_BUF_SIZE+2],  msm_uport->rx.buffer[msm_uport->rx.rx_inx * UARTDM_RX_BUF_SIZE+3]);
 
 		 /*
 		  * We are in a spin locked context, spin lock taken at
@@ -2022,7 +2095,8 @@ void msm_hs_set_mctrl_locked(struct uart_port *uport,
 	struct msm_hs_port *msm_uport = UARTDM_TO_MSM(uport);
 
 	if (msm_uport->pm_state != MSM_HS_PM_ACTIVE) {
-		MSM_HS_WARN("%s(): Clocks are off\n", __func__);
+		//MSM_HS_WARN("%s(): Clocks are off\n", __func__);
+		printk(KERN_INFO "(msm_serial_hs) msm_hs_set_mctrl_locked.Clocks are OFF\n");
 		return;
 	}
 	/* RTS is active low */
@@ -2388,6 +2462,20 @@ exit_request_clock_on:
 	return ret;
 }
 EXPORT_SYMBOL(msm_hs_request_clock_on);
+
+int msm_hs_get_clock_count(struct uart_port *uport)
+{
+	struct msm_hs_port *msm_uport = UARTDM_TO_MSM(uport);
+	return atomic_read(&msm_uport->resource_count);
+}
+EXPORT_SYMBOL(msm_hs_get_clock_count);
+
+int msm_hs_get_client_count(struct uart_port *uport)
+{
+	struct msm_hs_port *msm_uport = UARTDM_TO_MSM(uport);
+	return atomic_read(&msm_uport->client_count);
+}
+EXPORT_SYMBOL(msm_hs_get_client_count);
 
 static irqreturn_t msm_hs_wakeup_isr(int irq, void *dev)
 {
@@ -3235,6 +3323,10 @@ static int msm_hs_pm_sys_suspend_noirq(struct device *dev)
 	if (IS_ERR_OR_NULL(msm_uport))
 		return -ENODEV;
 
+	if (!pm_runtime_enabled(dev) && pdev->id == HS_SERIAL_ID_AT &&
+		msm_uport->pm_state == MSM_HS_PM_ACTIVE)
+		msm_hs_pm_suspend(dev);
+
 	mutex_lock(&msm_uport->mtx);
 
 	/*
@@ -3279,6 +3371,13 @@ static int msm_hs_pm_sys_resume_noirq(struct device *dev)
 	LOG_USR_MSG(msm_uport->ipc_msm_hs_pwr_ctxt,
 		"%s:PM State: Suspended\n", __func__);
 	mutex_unlock(&msm_uport->mtx);
+
+	if (!pm_runtime_enabled(dev) && pdev->id == HS_SERIAL_ID_AT &&
+		msm_uport->pm_state == MSM_HS_PM_SUSPENDED && msm_uport->jig_state) {
+		printk(KERN_INFO "(msm_serial_hs, id %u) msm_hs_runtime_suspend\n", pdev->id);
+		msm_hs_pm_resume(dev);
+	}
+
 	return 0;
 }
 #endif
@@ -3290,7 +3389,7 @@ static void  msm_serial_hs_rt_init(struct uart_port *uport)
 
 	MSM_HS_INFO("%s(): Enabling runtime pm", __func__);
 	pm_runtime_set_suspended(uport->dev);
-	pm_runtime_set_autosuspend_delay(uport->dev, 100);
+	pm_runtime_set_autosuspend_delay(uport->dev, 1000);//For BT Chipset Init
 	pm_runtime_use_autosuspend(uport->dev);
 	mutex_lock(&msm_uport->mtx);
 	msm_uport->pm_state = MSM_HS_PM_SUSPENDED;
@@ -3300,12 +3399,21 @@ static void  msm_serial_hs_rt_init(struct uart_port *uport)
 
 static int msm_hs_runtime_suspend(struct device *dev)
 {
+	struct platform_device *pdev = to_platform_device(dev);
+
+	if (pdev->id == HS_SERIAL_ID_AT)
+		panic("msm_hs_runtime_suspend is called!!");
+
+	printk(KERN_INFO "(msm_serial_hs, id %u) msm_hs_runtime_suspend\n", pdev->id);
 	msm_hs_pm_suspend(dev);
 	return 0;
 }
 
 static int msm_hs_runtime_resume(struct device *dev)
 {
+	struct platform_device *pdev = to_platform_device(dev);
+
+	printk(KERN_INFO "(msm_serial_hs, id %u) msm_hs_runtime_resume\n", pdev->id);
 	return msm_hs_pm_resume(dev);
 }
 #else
@@ -3314,6 +3422,64 @@ static int msm_hs_runtime_suspend(struct device *dev) {}
 static int msm_hs_runtime_resume(struct device *dev) {}
 #endif
 
+#if defined(CONFIG_MUIC_NOTIFIER)
+static int msm_serial_handle_notification(struct notifier_block *nb,
+		unsigned long action, void *data)
+{
+	struct msm_hs_port *msm_uport = container_of(nb, struct msm_hs_port, hs_nb);
+	struct uart_port *uport = &(msm_uport->uport);
+	struct platform_device *pdev = to_platform_device(uport->dev);
+
+#if defined(CONFIG_CCIC_NOTIFIER)
+	CC_NOTI_ATTACH_TYPEDEF *p_noti = (CC_NOTI_ATTACH_TYPEDEF *)data;
+	muic_attached_dev_t attached_dev = p_noti->cable_type;
+#else
+	muic_attached_dev_t attached_dev = *(muic_attached_dev_t *)data;
+#endif
+
+	pr_info("(msm_serial_hs, id %u) %s, act(%lu), dev(%lu)\n",
+		pdev->id, __func__, action, (unsigned long)attached_dev);
+
+	if((IS_ERR_OR_NULL(msm_uport)))	{
+		pr_err("Invalid msm_hs_port\n");
+		return -1;
+	}
+
+	switch (action) {
+		case MUIC_NOTIFY_CMD_DETACH:
+		case MUIC_NOTIFY_CMD_LOGICALLY_DETACH:
+			{
+				switch (attached_dev) {
+					case ATTACHED_DEV_JIG_UART_START ... ATTACHED_DEV_JIG_UART_END:
+						pr_info("(msm_serial_hs, id %u) %s ask clock off\n", pdev->id, __func__); 
+						msm_hs_request_clock_off(&msm_uport->uport);
+						msm_uport->jig_state = false;
+						break;
+					default:
+						break;
+				}
+			}
+			break;
+		case MUIC_NOTIFY_CMD_ATTACH:
+		case MUIC_NOTIFY_CMD_LOGICALLY_ATTACH:
+			{
+				switch (attached_dev) {
+					case ATTACHED_DEV_JIG_UART_START ... ATTACHED_DEV_JIG_UART_END:
+						pr_info("(msm_serial_hs, id %u) %s ask clock on\n", pdev->id, __func__); 
+						msm_hs_request_clock_on(&msm_uport->uport);
+						msm_uport->jig_state = true;
+						break;
+					default:
+						break;
+				}
+			}
+			break;
+		default:
+			break;
+	}
+	return 0;
+}
+#endif
 
 static int msm_hs_probe(struct platform_device *pdev)
 {
@@ -3348,6 +3514,17 @@ static int msm_hs_probe(struct platform_device *pdev)
 				return ret;
 			}
 		}
+
+		if (pdev->id == HS_SERIAL_ID_AT) {
+			if (!use_hs_for_at) {
+				pr_err("%s(id:%u) Use HSL driver for ATD.\n", __func__, pdev->id);
+				devm_kfree(&pdev->dev, pdata);
+				return -ENODEV;
+			} else {
+				pm_runtime_disable(&pdev->dev);
+			}
+		}
+
 		pdev->dev.platform_data = pdata;
 	}
 
@@ -3421,16 +3598,27 @@ static int msm_hs_probe(struct platform_device *pdev)
 	}
 
 	memset(name, 0, sizeof(name));
-	scnprintf(name, sizeof(name), "%s%s", dev_name(msm_uport->uport.dev),
-									"_state");
+	
+	snprintf(name, sizeof(name), "msm_serial_hs%d_state", pdev->id);
+	
 	msm_uport->ipc_msm_hs_log_ctxt =
 			ipc_log_context_create(IPC_MSM_HS_LOG_STATE_PAGES,
 								name, 0);
+	msm_uport->jig_state = false;
+#if defined(CONFIG_MUIC_NOTIFIER)
+	if (pdev->id == HS_SERIAL_ID_AT) {
+		muic_notifier_register(&msm_uport->hs_nb,
+			msm_serial_handle_notification, MUIC_NOTIFY_DEV_HSUART);
+	}
+#endif
 	if (!msm_uport->ipc_msm_hs_log_ctxt) {
 		dev_err(&pdev->dev, "%s: error creating logging context",
 								__func__);
 	} else {
-		msm_uport->ipc_debug_mask = INFO_LEV;
+		if (pdev->id == HS_SERIAL_ID_AT)
+			msm_uport->ipc_debug_mask = DBG_LEV;
+		else
+			msm_uport->ipc_debug_mask = INFO_LEV;
 		ret = sysfs_create_file(&pdev->dev.kobj,
 				&dev_attr_debug_mask.attr);
 		if (unlikely(ret))
@@ -3489,8 +3677,7 @@ static int msm_hs_probe(struct platform_device *pdev)
 	if (IS_ERR(msm_uport->pclk))
 		msm_uport->pclk = NULL;
 
-	msm_uport->hsuart_wq = alloc_workqueue("k_hsuart",
-					WQ_UNBOUND | WQ_MEM_RECLAIM, 1);
+	msm_uport->hsuart_wq = alloc_workqueue("k_hsuart", WQ_UNBOUND | WQ_MEM_RECLAIM, 1);
 	if (!msm_uport->hsuart_wq) {
 		MSM_HS_ERR("%s(): Unable to create workqueue hsuart_wq\n",
 								__func__);
@@ -3511,8 +3698,9 @@ static int msm_hs_probe(struct platform_device *pdev)
 	msm_uport->rx.flush = FLUSH_SHUTDOWN;
 
 	memset(name, 0, sizeof(name));
-	scnprintf(name, sizeof(name), "%s%s", dev_name(msm_uport->uport.dev),
-									"_tx");
+
+	snprintf(name, sizeof(name), "msm_serial_hs%d_tx", pdev->id);
+
 	msm_uport->tx.ipc_tx_ctxt =
 		ipc_log_context_create(IPC_MSM_HS_LOG_DATA_PAGES, name, 0);
 	if (!msm_uport->tx.ipc_tx_ctxt)
@@ -3520,8 +3708,9 @@ static int msm_hs_probe(struct platform_device *pdev)
 								__func__);
 
 	memset(name, 0, sizeof(name));
-	scnprintf(name, sizeof(name), "%s%s", dev_name(msm_uport->uport.dev),
-									"_rx");
+
+	snprintf(name, sizeof(name), "msm_serial_hs%d_rx", pdev->id);
+	
 	msm_uport->rx.ipc_rx_ctxt = ipc_log_context_create(
 					IPC_MSM_HS_LOG_DATA_PAGES, name, 0);
 	if (!msm_uport->rx.ipc_rx_ctxt)
@@ -3529,10 +3718,11 @@ static int msm_hs_probe(struct platform_device *pdev)
 								__func__);
 
 	memset(name, 0, sizeof(name));
-	scnprintf(name, sizeof(name), "%s%s", dev_name(msm_uport->uport.dev),
-									"_pwr");
-	msm_uport->ipc_msm_hs_pwr_ctxt = ipc_log_context_create(
-					IPC_MSM_HS_LOG_USER_PAGES, name, 0);
+
+	snprintf(name, sizeof(name), "msm_serial_hs%d_pwr", pdev->id);
+	
+	msm_uport->ipc_msm_hs_pwr_ctxt = ipc_log_context_create(IPC_MSM_HS_LOG_USER_PAGES, name, 0);
+	
 	if (!msm_uport->ipc_msm_hs_pwr_ctxt)
 		dev_err(&pdev->dev, "%s: error creating usr logging context",
 								__func__);
@@ -3542,6 +3732,10 @@ static int msm_hs_probe(struct platform_device *pdev)
 
 	clk_set_rate(msm_uport->clk, msm_uport->uport.uartclk);
 	msm_hs_clk_bus_vote(msm_uport);
+
+/* moved this line here from below */
+	uport->line = pdev->id;
+
 	ret = uartdm_init_port(uport);
 	if (unlikely(ret))
 		goto err_clock;
@@ -3574,10 +3768,18 @@ static int msm_hs_probe(struct platform_device *pdev)
 		goto err_clock;
 	}
 
-	msm_serial_debugfs_init(msm_uport, pdev->id);
-	msm_hs_unconfig_uart_gpios(uport);
+	ret = sysfs_create_file(&pdev->dev.kobj, &dev_attr_error_cnt.attr); 
+	if (unlikely(ret)) {
+		MSM_HS_ERR("%s: Failed to create dev. attr for error_cnt", __func__); 
+		goto err_clock;
+	}
 
-	uport->line = pdev->id;
+	if (pdev->id != HS_SERIAL_ID_AT)
+		msm_serial_debugfs_init(msm_uport, pdev->id);
+	msm_hs_unconfig_uart_gpios(uport);
+	
+/* moved this line prior to call uartdm_init_port() */
+//	uport->line = pdev->id;
 	if (pdata->userid && pdata->userid <= UARTDM_NR)
 		uport->line = pdata->userid;
 	ret = uart_add_one_port(&msm_hs_driver, uport);

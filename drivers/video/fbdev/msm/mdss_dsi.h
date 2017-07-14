@@ -107,6 +107,9 @@ enum dsi_panel_status_mode {
 	ESD_BTA,
 	ESD_REG,
 	ESD_REG_NT35596,
+#if defined(CONFIG_FB_MSM_MDSS_SAMSUNG)
+	ESD_REG_IRQ,
+#endif
 	ESD_TE,
 	ESD_MAX,
 };
@@ -165,6 +168,7 @@ enum dsi_pm_type {
 #define CTRL_STATE_PANEL_INIT		BIT(0)
 #define CTRL_STATE_MDP_ACTIVE		BIT(1)
 #define CTRL_STATE_DSI_ACTIVE		BIT(2)
+#define CTRL_STATE_PANEL_LP		BIT(3)
 
 #define DSI_NON_BURST_SYNCH_PULSE	0
 #define DSI_NON_BURST_SYNCH_EVENT	1
@@ -347,6 +351,12 @@ struct dsi_panel_cmds {
 	struct dsi_cmd_desc *cmds;
 	int cmd_cnt;
 	int link_state;
+#if defined(CONFIG_FB_MSM_MDSS_SAMSUNG)
+	char *read_size;
+	char *read_startoffset;
+	char *name;
+#endif
+
 };
 
 struct dsi_panel_timing {
@@ -371,6 +381,12 @@ struct dsi_pinctrl_res {
 	struct pinctrl *pinctrl;
 	struct pinctrl_state *gpio_state_active;
 	struct pinctrl_state *gpio_state_suspend;
+#if defined(CONFIG_FB_MSM_MDSS_SAMSUNG)
+	struct pinctrl_state *samsung_gpio_control0_state_active;
+	struct pinctrl_state *samsung_gpio_control0_state_suspend;
+	struct pinctrl_state *samsung_gpio_control1_state_active;
+	struct pinctrl_state *samsung_gpio_control1_state_suspend;
+#endif
 };
 
 struct panel_horizontal_idle {
@@ -421,6 +437,9 @@ struct mdss_dsi_ctrl_pdata {
 	int (*check_read_status) (struct mdss_dsi_ctrl_pdata *pdata);
 	int (*cmdlist_commit)(struct mdss_dsi_ctrl_pdata *ctrl, int from_mdp);
 	void (*switch_mode) (struct mdss_panel_data *pdata, int mode);
+#if defined(CONFIG_FB_MSM_MDSS_SAMSUNG)
+	int (*event_handler) (struct mdss_panel_data *pdata, int event, void *arg);
+#endif
 	struct mdss_panel_data panel_data;
 	unsigned char *ctrl_base;
 	struct dss_io_data ctrl_io;
@@ -695,6 +714,10 @@ void mdss_dsi_set_burst_mode(struct mdss_dsi_ctrl_pdata *ctrl);
 void mdss_dsi_set_reg(struct mdss_dsi_ctrl_pdata *ctrl, int off,
 	u32 mask, u32 val);
 
+#if defined(CONFIG_FB_MSM_MDSS_SAMSUNG)
+void mdss_dsi_samsung_poc_perf_mode_ctl(struct mdss_dsi_ctrl_pdata *ctrl, int enable);
+#endif
+
 static inline const char *__mdss_dsi_pm_name(enum dsi_pm_type module)
 {
 	switch (module) {
@@ -937,5 +960,14 @@ static inline enum dsi_physical_lane_id mdss_dsi_logical_to_physical_lane(
 
 	return i;
 }
+
+#if defined(CONFIG_FB_MSM_MDSS_SAMSUNG)
+int mdss_samsung_parse_dcs_cmds(struct device_node *np,
+		struct dsi_panel_cmds *pcmds, char *cmd_key, char *link_key);
+u32 mdss_samsung_panel_cmd_read(struct mdss_dsi_ctrl_pdata *ctrl,
+		struct dsi_panel_cmds *pcmds, int read_size);
+int mdss_samsung_dsi_pinctrl_set_state(
+	struct mdss_dsi_ctrl_pdata *ctrl_pdata, int control_number, bool active);
+#endif
 
 #endif /* MDSS_DSI_H */

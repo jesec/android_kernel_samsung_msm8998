@@ -389,6 +389,7 @@ struct sched_cluster {
 	int dstate, dstate_wakeup_latency, dstate_wakeup_energy;
 	unsigned int static_cluster_pwr_cost;
 	int notifier_sent;
+	bool wake_up_idle;
 };
 
 extern unsigned long all_cluster_ids[];
@@ -744,6 +745,7 @@ struct rq {
 	u64 avg_irqload;
 	u64 irqload_ts;
 	unsigned int static_cpu_pwr_cost;
+	int ignore_cstate_awareness;
 	struct task_struct *ed_task;
 	struct cpu_cycle cc;
 	u64 old_busy_time, old_busy_time_group;
@@ -1120,6 +1122,11 @@ enum sched_boost_policy {
 #define FULL_THROTTLE_BOOST 1
 #define CONSERVATIVE_BOOST 2
 #define RESTRAINED_BOOST 3
+#define FULL_THROTTLE_BOOST_DISABLE -1
+#define CONSERVATIVE_BOOST_DISABLE -2
+#define RESTRAINED_BOOST_DISABLE -3
+/* 3 types of boost + NO_BOOST */
+#define MAX_NUM_BOOST_TYPE RESTRAINED_BOOST+1
 
 static inline struct sched_cluster *cpu_cluster(int cpu)
 {
@@ -1448,6 +1455,8 @@ static inline void update_cgroup_boost_settings(void) { }
 static inline void restore_cgroup_boost_settings(void) { }
 #endif
 
+extern int alloc_related_thread_groups(void);
+
 #else	/* CONFIG_SCHED_HMP */
 
 struct hmp_sched_stats;
@@ -1638,6 +1647,7 @@ static inline void set_hmp_defaults(void) { }
 
 static inline void clear_reserved(int cpu) { }
 static inline void sched_boost_parse_dt(void) {}
+static inline int alloc_related_thread_groups(void) { return 0; }
 
 #define trace_sched_cpu_load(...)
 #define trace_sched_cpu_load_lb(...)
@@ -2531,16 +2541,3 @@ static inline u64 irq_time_read(int cpu)
 }
 #endif /* CONFIG_64BIT */
 #endif /* CONFIG_IRQ_TIME_ACCOUNTING */
-
-static inline void account_reset_rq(struct rq *rq)
-{
-#ifdef CONFIG_IRQ_TIME_ACCOUNTING
-	rq->prev_irq_time = 0;
-#endif
-#ifdef CONFIG_PARAVIRT
-	rq->prev_steal_time = 0;
-#endif
-#ifdef CONFIG_PARAVIRT_TIME_ACCOUNTING
-	rq->prev_steal_time_rq = 0;
-#endif
-}

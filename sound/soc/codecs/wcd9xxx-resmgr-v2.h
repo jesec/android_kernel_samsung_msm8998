@@ -87,4 +87,7 @@ int wcd_resmgr_get_clk_type(struct wcd9xxx_resmgr_v2 *resmgr);
 void wcd_resmgr_post_ssr_v2(struct wcd9xxx_resmgr_v2 *resmgr);
 void wcd_resmgr_set_sido_input_src_locked(struct wcd9xxx_resmgr_v2 *resmgr,
 					  int sido_src);
+void wcd_resmgr_set_sido_input_src(struct wcd9xxx_resmgr_v2 *resmgr,
+					  int sido_src);
+
 #endif
