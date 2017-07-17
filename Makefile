@@ -617,6 +617,9 @@ else
 KBUILD_CFLAGS	+= -O2
 endif
 
+# Processor-specific tunes for Snapdragon 835
+KBUILD_CFLAGS   += $(call cc-option,-mtune=cortex-a73.cortex-a53)
+
 # Disallow introduction of unaligned stores
 KBUILD_CFLAGS   += $(call cc-option,--param=store-merging-allow-unaligned=0)
 
